@@ -1,0 +1,2396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>NearPath Tutors — Find the right teacher, close to home</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%236C5CE7'/%3E%3Cstop offset='100%25' stop-color='%23EC4899'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='100' height='100' rx='24' fill='url(%23g)'/%3E%3Cpath d='M50 30 L34 40 L50 50 L66 40 Z' fill='%23fff'/%3E%3Cpath d='M40 43 L40 58 Q40 66 50 66 Q60 66 60 58 L60 43 L50 49 Z' fill='%23fff' opacity='0.92'/%3E%3Cline x1='66' y1='40' x2='66' y2='56' stroke='%23fff' stroke-width='2.4' stroke-linecap='round'/%3E%3Ccircle cx='66' cy='59' r='3.4' fill='%23fff'/%3E%3C/svg%3E" />
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+:root{
+  --bg:#0A0E27;
+  --bg2:#12163a;
+  --glass: rgba(255,255,255,0.055);
+  --glass-hi: rgba(255,255,255,0.09);
+  --glass-border: rgba(255,255,255,0.14);
+  --text:#F4F2FF;
+  --text-dim:#9C97C4;
+  --text-dimmer:#716C99;
+  --primary:#6C5CE7;
+  --primary2:#EC4899;
+  --amber:#F5A623;
+  --green:#2ECC71;
+  --blue:#4FA8F5;
+  --pink:#F472B6;
+  --red:#FB6A6A;
+  --radius:20px;
+  --mono: 'JetBrains Mono', monospace;
+  --display: 'Fraunces', serif;
+  --body: 'Inter', sans-serif;
+  /* theme-aware surface tokens (swapped by [data-theme="light"] below) */
+  --input-bg: rgba(255,255,255,0.05);
+  --input-bg-focus: rgba(255,255,255,0.08);
+  --scrollbar-thumb: rgba(255,255,255,0.15);
+  --shadow-card: rgba(0,0,0,0.5);
+  --divider: rgba(255,255,255,0.06);
+  --divider-soft: rgba(255,255,255,0.03);
+  --backdrop: rgba(5,6,20,0.68);
+  --blob-opacity: 0.45;
+  color-scheme: dark;
+}
+:root[data-theme="light"]{
+  --bg:#F4F3FA;
+  --bg2:#FFFFFF;
+  --glass: rgba(30,26,70,0.045);
+  --glass-hi: rgba(30,26,70,0.08);
+  --glass-border: rgba(30,26,70,0.13);
+  --text:#211E3D;
+  --text-dim:#5C5885;
+  --text-dimmer:#8B87AC;
+  --input-bg: rgba(30,26,70,0.04);
+  --input-bg-focus: rgba(30,26,70,0.07);
+  --scrollbar-thumb: rgba(30,26,70,0.18);
+  --shadow-card: rgba(30,26,70,0.16);
+  --divider: rgba(30,26,70,0.09);
+  --divider-soft: rgba(30,26,70,0.045);
+  --backdrop: rgba(225,224,240,0.75);
+  --blob-opacity: 0.22;
+  color-scheme: light;
+}
+*{box-sizing:border-box; margin:0; padding:0;}
+html{scroll-behavior:smooth;}
+
+/* ---------------------------------------------------------------
+   Theme toggle — simple cross-fade.
+   When the browser supports the View Transitions API, toggleTheme()
+   calls document.startViewTransition(). That gives us a snapshot of the
+   old theme and a snapshot of the new theme stacked on top of each
+   other; this just fades the new one in over the old one. Kept to
+   opacity only (no clip-path/filter) so there's nothing for the browser
+   to resample frame-to-frame. Browsers without support (or people with
+   reduced-motion on) just get an instant swap — see the JS fallback in
+   toggleTheme().
+--------------------------------------------------------------- */
+@media (prefers-reduced-motion: no-preference){
+  ::view-transition-old(root),
+  ::view-transition-new(root){
+    animation: none;
+    mix-blend-mode: normal;
+  }
+  ::view-transition-old(root){ z-index: 1; }
+  ::view-transition-new(root){
+    z-index: 2;
+    animation: theme-fade 220ms ease-out;
+  }
+  @keyframes theme-fade{
+    from{ opacity: 0; }
+    to{ opacity: 1; }
+  }
+}
+
+
+body{
+  font-family: var(--body);
+  background: var(--bg);
+  color: var(--text);
+  min-height:100vh;
+  overflow-x:hidden;
+  position:relative;
+  transition: background .3s ease, color .3s ease;
+}
+::selection{ background: var(--primary); color:#fff; }
+::-webkit-scrollbar{ width:10px; }
+::-webkit-scrollbar-track{ background: transparent; }
+::-webkit-scrollbar-thumb{ background: var(--scrollbar-thumb); border-radius:10px; }
+
+/* ---------- floating gradient blobs ---------- */
+.blobs{ position:fixed; inset:0; z-index:0; overflow:hidden; pointer-events:none; }
+.blob{ position:absolute; border-radius:50%; filter: blur(90px); opacity: var(--blob-opacity); }
+.blob1{ width:520px; height:520px; background: radial-gradient(circle, var(--primary), transparent 70%); top:-160px; left:-120px; animation: float1 22s ease-in-out infinite; }
+.blob2{ width:460px; height:460px; background: radial-gradient(circle, var(--primary2), transparent 70%); top:20%; right:-160px; animation: float2 26s ease-in-out infinite; }
+.blob3{ width:380px; height:380px; background: radial-gradient(circle, var(--blue), transparent 70%); bottom:-140px; left:20%; animation: float3 20s ease-in-out infinite; }
+.blob4{ width:300px; height:300px; background: radial-gradient(circle, var(--amber), transparent 70%); bottom:10%; right:15%; opacity:0.28; animation: float1 30s ease-in-out infinite reverse; }
+@keyframes float1{ 0%,100%{ transform:translate(0,0) scale(1);} 50%{ transform:translate(60px,80px) scale(1.1);} }
+@keyframes float2{ 0%,100%{ transform:translate(0,0) scale(1);} 50%{ transform:translate(-70px,60px) scale(0.9);} }
+@keyframes float3{ 0%,100%{ transform:translate(0,0) scale(1);} 50%{ transform:translate(50px,-60px) scale(1.15);} }
+
+#app{ position:relative; z-index:1; min-height:100vh; }
+
+/* ---------- utility ---------- */
+.wrap{ max-width:1240px; margin:0 auto; padding:0 28px; }
+.glass{
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border-radius: var(--radius);
+}
+.glass:hover{ background: var(--glass-hi); }
+h1,h2,h3,h4{ font-family: var(--display); font-weight:600; letter-spacing:-0.01em; }
+.eyebrow{ font-family: var(--mono); font-size:12px; letter-spacing:0.14em; text-transform:uppercase; color: var(--text-dim); }
+.muted{ color: var(--text-dim); }
+.btn{
+  display:inline-flex; align-items:center; justify-content:center; gap:8px;
+  font-family: var(--body); font-weight:600; font-size:14.5px;
+  padding:13px 24px; border-radius:100px; border:none; cursor:pointer;
+  transition: transform .25s cubic-bezier(.2,.9,.3,1.3), box-shadow .25s ease, background .25s ease;
+  white-space:nowrap;
+}
+.btn:active{ transform: scale(0.96); }
+.btn-primary{ background: linear-gradient(135deg, var(--primary), var(--primary2)); color:#fff; box-shadow: 0 8px 24px -8px rgba(108,92,231,0.7); }
+.btn-primary:hover{ transform: translateY(-2px); box-shadow: 0 14px 30px -8px rgba(108,92,231,0.85); }
+.btn-ghost{ background: var(--glass); border:1px solid var(--glass-border); color:var(--text); }
+.btn-ghost:hover{ background: var(--glass-hi); transform: translateY(-2px); }
+.btn-sm{ padding:9px 16px; font-size:13px; }
+.btn-block{ width:100%; }
+.btn-loading{ position:relative; pointer-events:none; color:transparent !important; }
+.btn-loading .btn-spinner{
+  position:absolute; top:50%; left:50%; width:16px; height:16px; margin:-8px 0 0 -8px;
+  border-radius:50%; border:2px solid rgba(255,255,255,0.4); border-top-color:#fff;
+  animation: btn-spin .7s linear infinite;
+}
+.btn-ghost.btn-loading .btn-spinner{ border-color: rgba(120,120,140,0.35); border-top-color: var(--text); }
+@keyframes btn-spin{ to{ transform: rotate(360deg); } }
+.pill{ display:inline-flex; align-items:center; gap:6px; padding:7px 14px; border-radius:100px; font-size:13px; font-weight:600; border:1px solid var(--glass-border); background:var(--glass); cursor:pointer; transition: all .2s ease; white-space:nowrap;}
+.pill:hover{ background: var(--glass-hi); transform: translateY(-1px); }
+.pill.active{ background: linear-gradient(135deg, var(--primary), var(--primary2)); border-color:transparent; color:#fff; }
+.input{
+  width:100%; background: var(--input-bg); border:1px solid var(--glass-border);
+  color:var(--text); padding:13px 16px; border-radius:12px; font-family:var(--body); font-size:14px; outline:none;
+  transition: border-color .2s ease, background .2s ease;
+}
+.input:focus{ border-color: var(--primary); background: var(--input-bg-focus); }
+.input::placeholder{ color: var(--text-dimmer); }
+/* selects render their closed box with our theme, but the browser draws the
+   open dropdown list using native OS colors — color-scheme + explicit
+   option colors keep that list readable in both themes instead of e.g.
+   pale text on a pale popup. */
+select.input{ cursor:pointer; }
+select.input option{ background: var(--bg2); color: var(--text); }
+label.field-label{ display:block; font-size:12.5px; font-weight:600; color:var(--text-dim); margin-bottom:6px; font-family:var(--mono); letter-spacing:0.03em; }
+.field{ margin-bottom:16px; }
+.badge{ display:inline-flex; align-items:center; gap:5px; padding:4px 10px; border-radius:100px; font-size:11.5px; font-weight:700; font-family:var(--mono); letter-spacing:0.02em; }
+.badge-green{ background: rgba(46,204,113,0.15); color: var(--green); }
+.badge-amber{ background: rgba(245,166,35,0.15); color: var(--amber); }
+.badge-red{ background: rgba(251,106,106,0.15); color: var(--red); }
+.badge-blue{ background: rgba(79,168,245,0.15); color: var(--blue); }
+.card{ transition: transform .3s cubic-bezier(.2,.9,.3,1), box-shadow .3s ease; }
+.card:hover{ transform: translateY(-6px); box-shadow: 0 20px 40px -16px var(--shadow-card); }
+.fade-in{ animation: fadeIn .5s ease both; }
+@keyframes fadeIn{ from{ opacity:0; transform: translateY(14px);} to{ opacity:1; transform:translateY(0);} }
+.stagger > *{ animation: fadeIn .5s ease both; }
+.stagger > *:nth-child(1){ animation-delay: .02s;} .stagger > *:nth-child(2){ animation-delay: .06s;}
+.stagger > *:nth-child(3){ animation-delay: .10s;} .stagger > *:nth-child(4){ animation-delay: .14s;}
+.stagger > *:nth-child(5){ animation-delay: .18s;} .stagger > *:nth-child(6){ animation-delay: .22s;}
+.stagger > *:nth-child(7){ animation-delay: .26s;} .stagger > *:nth-child(8){ animation-delay: .30s;}
+.view-transition{ animation: viewIn .45s cubic-bezier(.2,.9,.3,1) both; }
+@keyframes viewIn{ from{ opacity:0; transform: translateY(18px) scale(0.99);} to{ opacity:1; transform:translateY(0) scale(1);} }
+a{ color:inherit; text-decoration:none; }
+.stars{ display:inline-flex; gap:2px; color: var(--amber); font-size:14px; letter-spacing:1px; }
+.divider-dashed{ border:none; border-top:2px dashed var(--scrollbar-thumb); margin:0; }
+.avatar{ border-radius:50%; display:flex; align-items:center; justify-content:center; font-family:var(--display); font-weight:600; flex-shrink:0; color:#fff; }
+.scroll-x{ display:flex; gap:10px; overflow-x:auto; padding-bottom:6px; scrollbar-width:none; }
+.scroll-x::-webkit-scrollbar{ display:none; }
+.grid-cards{ display:grid; grid-template-columns: repeat(auto-fill, minmax(290px,1fr)); gap:20px; }
+.toast-wrap{ position:fixed; top:20px; right:20px; z-index:999; display:flex; flex-direction:column; gap:10px; }
+.toast{ padding:14px 20px; border-radius:14px; font-size:14px; font-weight:600; min-width:260px; animation: toastIn .35s cubic-bezier(.2,.9,.3,1.2) both; display:flex; align-items:center; gap:10px;}
+@keyframes toastIn{ from{ opacity:0; transform: translateX(40px);} to{ opacity:1; transform:translateX(0);} }
+.modal-backdrop{ position:fixed; inset:0; background:var(--backdrop); backdrop-filter: blur(6px); z-index:200; display:flex; align-items:center; justify-content:center; padding:20px; animation: fadeIn .25s ease both; }
+.modal{ width:100%; max-width:460px; max-height:88vh; overflow-y:auto; animation: modalIn .35s cubic-bezier(.2,.9,.3,1.15) both; padding:28px; }
+@keyframes modalIn{ from{ opacity:0; transform: translateY(30px) scale(0.96);} to{ opacity:1; transform:translateY(0) scale(1);} }
+
+/* ticket / class-slip signature element */
+.ticket{
+  position:relative; display:flex; align-items:stretch; border-radius:16px; overflow:hidden;
+  background: var(--glass); border:1px solid var(--glass-border);
+}
+.ticket-stub{ width:86px; flex-shrink:0; display:flex; flex-direction:column; align-items:center; justify-content:center; font-family:var(--mono); position:relative; }
+.ticket-stub .t-day{ font-size:11px; letter-spacing:0.08em; opacity:0.85; }
+.ticket-stub .t-time{ font-size:13px; font-weight:700; margin-top:4px; text-align:center; }
+.ticket-perf{ width:0; border-left:2px dashed var(--glass-border); position:relative; }
+.ticket-perf::before, .ticket-perf::after{ content:''; position:absolute; width:14px; height:14px; background:var(--bg); border-radius:50%; left:-8px; }
+.ticket-perf::before{ top:-7px; } .ticket-perf::after{ bottom:-7px; }
+.ticket-body{ flex:1; padding:14px 18px; }
+
+/* navbar */
+.nav{ position:sticky; top:0; z-index:100; padding:16px 0; }
+.nav-inner{ display:flex; align-items:center; justify-content:space-between; padding:12px 20px; }
+.logo{ display:flex; align-items:center; gap:10px; font-family:var(--display); font-weight:700; font-size:19px; }
+.logo-mark{ width:34px; height:34px; border-radius:10px; background: linear-gradient(135deg, var(--primary), var(--primary2)); display:flex; align-items:center; justify-content:center; font-size:16px; }
+.nav-links{ display:flex; gap:4px; align-items:center; }
+.nav-links a, .nav-links button{ background:none; border:none; color:var(--text-dim); font-weight:600; font-size:14px; padding:9px 14px; border-radius:100px; cursor:pointer; transition: all .2s ease; font-family:var(--body); }
+.nav-links a:hover, .nav-links button:hover{ color:var(--text); background: var(--glass); }
+
+/* calendar */
+.cal-grid{ display:grid; grid-template-columns: repeat(7, 1fr); gap:8px; }
+.cal-head{ font-family:var(--mono); font-size:11px; text-align:center; color:var(--text-dimmer); padding-bottom:4px; }
+.cal-cell{ aspect-ratio:1; border-radius:10px; background: var(--divider-soft); border:1px solid var(--divider); display:flex; flex-direction:column; align-items:center; justify-content:center; font-size:12.5px; position:relative; }
+.cal-cell.has-class{ background: rgba(108,92,231,0.18); border-color: rgba(108,92,231,0.4); }
+.cal-cell .dot{ width:5px; height:5px; border-radius:50%; background: var(--primary2); position:absolute; bottom:5px; }
+
+table.data-table{ width:100%; border-collapse:collapse; font-size:13.5px; }
+table.data-table th{ text-align:left; font-family:var(--mono); font-size:11px; letter-spacing:0.04em; text-transform:uppercase; color:var(--text-dimmer); padding:10px 12px; border-bottom:1px solid var(--glass-border); }
+table.data-table td{ padding:12px; border-bottom:1px solid var(--divider-soft); }
+table.data-table tr:hover td{ background: var(--divider-soft); }
+
+.sidebar-link{ display:flex; align-items:center; gap:10px; padding:11px 14px; border-radius:12px; color:var(--text-dim); font-weight:600; font-size:14px; cursor:pointer; transition: all .2s ease; }
+.sidebar-link:hover{ background: var(--glass); color:var(--text); }
+.sidebar-link.active{ background: linear-gradient(135deg, rgba(108,92,231,0.25), rgba(236,73,153,0.2)); color:#fff; border:1px solid rgba(108,92,231,0.4); }
+
+.stat-card{ padding:20px; }
+.stat-num{ font-family:var(--display); font-size:32px; font-weight:600; margin-top:4px; }
+
+@media(max-width:860px){
+  .nav-links{ display:none; }
+  .hide-mobile{ display:none; }
+  .grid-2{ grid-template-columns:1fr !important; }
+  .dash-layout{ grid-template-columns:1fr !important; }
+}
+.grid-2{ display:grid; grid-template-columns: 1.6fr 1fr; gap:24px; }
+.dash-layout{ display:grid; grid-template-columns: 220px 1fr; gap:24px; align-items:start; }
+
+@media (prefers-reduced-motion: reduce){
+  *{ animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+}
+</style>
+</head>
+<body>
+<script>
+// Apply the saved (or OS-preferred) theme immediately, before anything
+// renders, so the page never flashes the wrong theme on load.
+(function(){
+  try{
+    var saved = localStorage.getItem('npt-theme');
+    var theme = saved || ((window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark');
+    document.documentElement.setAttribute('data-theme', theme);
+  }catch(e){ document.documentElement.setAttribute('data-theme', 'dark'); }
+})();
+</script>
+<div class="blobs">
+  <div class="blob blob1"></div><div class="blob blob2"></div><div class="blob blob3"></div><div class="blob blob4"></div>
+</div>
+<div id="app"></div>
+<div class="toast-wrap" id="toastWrap"></div>
+
+<!-- Supabase client library (auth + database) -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script>
+/* =========================================================
+   SUPABASE CONFIG — fill these in from your Supabase project
+   (Project Settings → API). See README.md for step-by-step setup.
+========================================================= */
+const SUPABASE_URL = 'https://cloltuitbpxzjipskzhb.supabase.co/';
+const SUPABASE_ANON_KEY = 'sb_publishable_jxbHGhZSFqv6Aw1XNVQPfA_wMJr3ECi';
+const sb = (SUPABASE_URL.startsWith('http'))
+  ? supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+  : null;
+// The admin login screen shows a "username" field for a friendlier feel,
+// but under the hood it signs in as this fixed Supabase auth account —
+// see README "Part 7" for how to create it. The real gate is the account's
+// password (checked by Supabase, not by this frontend code) plus its
+// profiles.role='admin', which is what the delete policies check.
+const ADMIN_EMAIL = 'nearpath28@gmail.com';
+</script>
+
+<script>
+/* =========================================================
+   DATA
+========================================================= */
+const CATS = [
+  {id:'academics', label:'Academics', icon:'📘', color:'--blue'},
+  {id:'sports', label:'Sports', icon:'⚽', color:'--green'},
+  {id:'abacus', label:'Abacus & Math', icon:'🧮', color:'--amber'},
+  {id:'music', label:'Music', icon:'🎵', color:'--pink'},
+  {id:'dance', label:'Dance', icon:'💃', color:'--primary2'},
+  {id:'coding', label:'Coding', icon:'💻', color:'--primary'},
+  {id:'art', label:'Art & Craft', icon:'🎨', color:'--amber'},
+];
+const AVATAR_COLORS = ['#6C5CE7','#2ECC71','#F5A623','#F472B6','#EC4899','#4FA8F5','#FB6A6A'];
+
+/* =========================================================
+   STATE
+========================================================= */
+const state = {
+  view: 'home',
+  portal: 'customer', // customer | teacher
+  session: null,       // supabase auth session, or null
+  profile: null,        // row from `profiles` table for the signed-in user
+  selectedTeacherId: null,
+  selectedTeacherFrom: 'home',  // 'home' | 'browse' — which page the teacher profile was opened from, for the back button
+  filters: { category:'all', query:'', sortDistance:false },
+  teacherTab: 'overview',
+  studentAuthMode: 'login',   // 'login' | 'signup'
+  teacherAuthMode: 'login',
+  myLocation: null,      // { lat, lng } for the person browsing — used to auto-calc distance to each teacher
+  locatingMe: false,     // true while a geolocation request is in flight
+  postLoginRedirect: null,   // { view, selectedTeacherId, selectedTeacherFrom, reopenEnquiryFor } — where (and what) to restore after logging in or signing up mid-action, anywhere on the site
+  adminTab: 'teachers',       // 'teachers' | 'students' — which list the admin panel is showing
+};
+try{
+  var savedLoc = localStorage.getItem('npt-my-location');
+  if(savedLoc) state.myLocation = JSON.parse(savedLoc);
+}catch(e){}
+const locationPreviouslyDeclined = (()=>{ try{ return localStorage.getItem('npt-location-declined')==='1'; }catch(e){ return false; } })();
+
+// Great-circle distance between two lat/lng points, in km (Haversine formula).
+function haversineKm(lat1, lng1, lat2, lng2){
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI/180;
+  const dLng = (lng2 - lng1) * Math.PI/180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+// Raw distance in km from the browsing person to a teacher, or null if
+// either side's coordinates aren't known yet. Used for sorting.
+function distanceKmToTeacher(t){
+  if(!state.myLocation || t.lat==null || t.lng==null) return null;
+  return haversineKm(state.myLocation.lat, state.myLocation.lng, t.lat, t.lng);
+}
+
+// Formatted distance from the browsing person to a teacher, or null if
+// either side's coordinates aren't known yet. Always expressed in km.
+function distanceToTeacher(t){
+  const km = distanceKmToTeacher(t);
+  if(km==null) return null;
+  return (km < 0.1 ? '<0.1' : km.toFixed(1)) + ' km away';
+}
+
+// Ask the browser for the person's current location, store it, and
+// re-render whatever list/profile is on screen with fresh distances.
+function useMyLocation(){
+  if(!navigator.geolocation){ toast('Location isn\'t supported in this browser', 'warn'); return; }
+  state.locatingMe = true;
+  render();
+  navigator.geolocation.getCurrentPosition(
+    (pos)=>{
+      state.myLocation = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      state.locatingMe = false;
+      try{ localStorage.setItem('npt-my-location', JSON.stringify(state.myLocation)); }catch(e){}
+      toast('📍 Location set — distances updated', 'ok');
+      render();
+    },
+    (err)=>{
+      state.locatingMe = false;
+      toast('❌ Couldn\'t get your location — check permissions and try again', 'err');
+      render();
+    },
+    { enableHighAccuracy:false, timeout:10000 }
+  );
+}
+
+// Same as useMyLocation, but for the one-time entry prompt: gives the
+// button in the modal instant feedback and closes the modal when done.
+function useMyLocationOnboarding(){
+  if(!navigator.geolocation){ toast('Location isn\'t supported in this browser', 'warn'); closeModal(); return; }
+  const btn = document.querySelector('[data-action="onboarding-location-allow"]');
+  if(btn){ btn.disabled = true; btn.textContent = 'Locating…'; }
+  navigator.geolocation.getCurrentPosition(
+    (pos)=>{
+      state.myLocation = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      try{ localStorage.setItem('npt-my-location', JSON.stringify(state.myLocation)); }catch(e){}
+      closeModal();
+      toast('📍 Location set — distances updated', 'ok');
+      render();
+    },
+    (err)=>{
+      closeModal();
+      toast('❌ Couldn\'t get your location — check permissions and try again', 'err');
+    },
+    { enableHighAccuracy:false, timeout:10000 }
+  );
+}
+
+let TEACHERS = [];
+let teachersStatus = 'idle'; // idle | loading | ready | error
+
+let myEnrollments = [];
+let myPayments = [];
+let studentDataStatus = 'idle';
+
+let myStudents = [];       // enrollments-as-students, for the logged-in teacher
+let myEnquiries = [];      // enquiries a teacher has received from students
+let teacherDataStatus = 'idle';
+
+let myReviews = [];         // reviews the logged-in student has already left, keyed by enrollment_id
+let teacherReviews = [];    // reviews shown on a teacher's public profile page
+let teacherReviewsStatus = 'idle';
+let teacherReviewsForId = null;
+
+let ADMIN_TEACHERS = [];    // every teacher profile, for the admin panel
+let ADMIN_STUDENTS = [];    // every student profile, for the admin panel
+let adminDataStatus = 'idle'; // idle | loading | ready | error
+
+function nav(view, extra){
+  state.view = view;
+  if(extra) Object.assign(state, extra);
+  window.scrollTo({top:0, behavior:'smooth'});
+  if(view==='home' || view==='browse' || view==='teacherProfile') ensureTeachers();
+  if(view==='teacherProfile' && state.selectedTeacherId) ensureTeacherReviews(state.selectedTeacherId);
+  if(view==='studentDashboard') ensureStudentData();
+  if(view==='teacherDashboard') ensureTeacherData();
+  if(view==='adminDashboard') ensureAdminData();
+  render();
+}
+
+function currentTheme(){ return document.documentElement.getAttribute('data-theme') || 'dark'; }
+
+function toggleTheme(btn){
+  const next = currentTheme()==='dark' ? 'light' : 'dark';
+  const applyTheme = () => {
+    document.documentElement.setAttribute('data-theme', next);
+    try{ localStorage.setItem('npt-theme', next); }catch(e){}
+    render(); // re-render so the toggle button's icon/label stays in sync
+  };
+
+  const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const canAnimate = document.startViewTransition && !reduceMotion;
+  if(!canAnimate){ applyTheme(); return; }
+
+  document.startViewTransition(applyTheme);
+}
+
+function toast(msg, type){
+  const wrap = document.getElementById('toastWrap');
+  const el = document.createElement('div');
+  const colors = {ok:'linear-gradient(135deg,#2ECC71,#27ae60)', info:'linear-gradient(135deg,#6C5CE7,#EC4899)', warn:'linear-gradient(135deg,#F5A623,#e67e22)', err:'linear-gradient(135deg,#FB6A6A,#c0392b)'};
+  el.className = 'toast';
+  el.style.background = colors[type||'info'];
+  el.style.color = '#fff';
+  el.innerHTML = msg;
+  wrap.appendChild(el);
+  setTimeout(()=>{ el.style.transition='opacity .4s ease, transform .4s ease'; el.style.opacity='0'; el.style.transform='translateX(40px)'; setTimeout(()=>el.remove(),400); }, 3200);
+}
+
+// Puts a button into/out of a spinning "buffering" state while an async
+// auth call is in flight, so there's no awkward static gap before the
+// next screen appears. Safe to call even if the view has already been
+// re-rendered out from under the original button (e.g. after a
+// successful login swaps the whole page) — the .finally() just no-ops
+// on a detached element.
+function setBtnLoading(btn, loading){
+  if(!btn) return;
+  if(loading){
+    if(btn.querySelector('.btn-spinner')) return; // already loading
+    btn.classList.add('btn-loading');
+    btn.disabled = true;
+    const spin = document.createElement('span');
+    spin.className = 'btn-spinner';
+    btn.appendChild(spin);
+  }else{
+    btn.classList.remove('btn-loading');
+    btn.disabled = false;
+    const spin = btn.querySelector('.btn-spinner');
+    if(spin) spin.remove();
+  }
+}
+
+function starString(rating){
+  const full = Math.round(rating||0);
+  return '★'.repeat(full) + '☆'.repeat(5-full);
+}
+// Maps a 1–5 rating to a color along a red → amber → green gradient, so
+// low ratings read as a warning and high ratings read as a strong
+// positive, with a smooth blend in between. 0/no rating stays neutral.
+function ratingColor(rating){
+  if(!rating) return 'var(--text-dimmer)';
+  const clamped = Math.max(1, Math.min(5, rating));
+  const hue = (clamped - 1) / 4 * 120; // 1★=0 (red) … 5★=120 (green)
+  return `hsl(${hue.toFixed(0)}, 72%, 50%)`;
+}
+// Translucent background version of ratingColor(), for badge fills.
+function ratingColorBg(rating){
+  if(!rating) return 'transparent';
+  const clamped = Math.max(1, Math.min(5, rating));
+  const hue = (clamped - 1) / 4 * 120;
+  return `hsla(${hue.toFixed(0)}, 72%, 50%, 0.15)`;
+}
+// Small inline badge for teacher cards — shows "New" instead of a fake
+// star rating for teachers who don't have any reviews yet.
+function ratingBadgeSmall(t){
+  if(!t.reviews) return `<div class="badge badge-blue">🆕 New</div>`;
+  return `<div class="badge" style="background:${ratingColorBg(t.rating)}; color:${ratingColor(t.rating)};">${starString(t.rating)[0]} ${t.rating}</div>`;
+}
+
+/* =========================================================
+   SUPABASE — AUTH
+========================================================= */
+function isConfigured(){ return !!sb; }
+
+// True the moment refreshProfile() finds a signed-in Google user with no
+// profiles row yet — i.e. their very first "Continue with Google" sign-in.
+// render() checks this to show the name-entry screen instead of routing
+// them anywhere else, until completeOAuthSignup() below resolves it.
+let awaitingOAuthName = false;
+// The role (student/teacher) they intended, read out of localStorage the
+// moment we detect awaitingOAuthName — stashed there right before the
+// redirect to Google by signInWithGoogle(), since Google itself has no
+// notion of "student vs teacher".
+let oauthPendingRole = 'student';
+
+async function refreshProfile(){
+  if(!state.session){ state.profile = null; awaitingOAuthName = false; return; }
+  const { data, error } = await sb.from('profiles').select('*').eq('id', state.session.user.id).single();
+  if(!error){ state.profile = data; awaitingOAuthName = false; return; }
+  if(error.code !== 'PGRST116'){ console.error(error); state.profile = null; awaitingOAuthName = false; return; }
+  // PGRST116 = no matching row. Email/password sign-up always creates its
+  // own profiles row right after auth.signUp() (see signUpStudent/
+  // signUpTeacher below), so reaching here means a Google sign-in that
+  // hasn't been given a name yet — don't guess it from their Google
+  // account; ask them (see viewOAuthNamePrompt / completeOAuthSignup).
+  state.profile = null;
+  awaitingOAuthName = true;
+  try{ oauthPendingRole = localStorage.getItem('npt-oauth-role') || 'student'; }catch(e){ oauthPendingRole = 'student'; }
+}
+
+// Screen shown after a first-time Google sign-in, before any profile row
+// exists — collects the name to store instead of pulling it from Google.
+function viewOAuthNamePrompt(){
+  return `
+  ${navbar()}
+  <div class="wrap view-transition" style="padding-top:60px; display:flex; justify-content:center;">
+    <div class="glass fade-in" style="padding:36px; width:100%; max-width:420px;">
+      <div class="eyebrow">One last thing</div>
+      <h2 style="font-size:24px; margin:8px 0 10px;">What's your name?</h2>
+      <p class="muted" style="font-size:13.5px; margin-bottom:22px;">This is the name ${oauthPendingRole==='teacher' ? 'parents/students' : 'teachers'} will see on NearPath Tutors.</p>
+      <div class="field"><label class="field-label">Your name</label><input class="input" id="oauthName" placeholder="Full name" autofocus/></div>
+      <button class="btn btn-primary btn-block" data-action="oauth-name-confirm">Continue</button>
+    </div>
+  </div>`;
+}
+
+// Creates the profiles row (and, for a teacher, the teacher_profiles row)
+// using the name just entered, then routes them onward exactly like
+// signUpStudent/signUpTeacher do for email/password sign-ups.
+async function completeOAuthSignup(name){
+  name = (name||'').trim();
+  if(!name) return toast('Please enter your name', 'warn');
+  const user = state.session.user;
+  const role = oauthPendingRole || 'student';
+  const { data, error } = await sb.from('profiles').insert({ id:user.id, role, full_name:name }).select().single();
+  if(error) return toast('❌ ' + error.message, 'err');
+  try{ localStorage.removeItem('npt-oauth-role'); }catch(e){}
+  awaitingOAuthName = false;
+  state.profile = data;
+  if(role === 'teacher'){
+    const freshTeacherProfile = {
+      profile_id:user.id, initials: name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase(),
+      color: AVATAR_COLORS[Math.floor(Math.random()*AVATAR_COLORS.length)], category:'academics',
+      subjects:[], location:'', lat:null, lng:null, fee_start:0, fee_unit:'/month', experience:'', bio:'',
+    };
+    await sb.from('teacher_profiles').insert(freshTeacherProfile);
+    state.selectedTeacherProfile = { ...freshTeacherProfile, schedule_slots: [] };
+    teacherDataStatus = 'idle';
+    toast('🎉 Teacher account created — let\'s fill in your profile.', 'ok');
+    goPostAuth('teacherOnboarding');
+  }else{
+    studentDataStatus = 'idle';
+    toast('🎉 Account created!', 'ok');
+    goPostAuth('studentDashboard');
+  }
+}
+
+// Kicks off "Continue with Google". Stashes the intended role so
+// refreshProfile()/viewOAuthNamePrompt() can use it once Google redirects
+// back with a session.
+async function signInWithGoogle(role){
+  try{ localStorage.setItem('npt-oauth-role', role); }catch(e){}
+  const { error } = await sb.auth.signInWithOAuth({
+    provider: 'google',
+    options: { redirectTo: location.origin + location.pathname },
+  });
+  if(error) toast('❌ ' + error.message, 'err');
+}
+
+let lastAuthUserId = null;
+// Supabase fires SIGNED_IN on onAuthStateChange as soon as signUp()/
+// signInWithPassword() resolves internally — which lands *before* our own
+// signUpStudent/signInStudent/etc functions below finish their own
+// refreshProfile() + nav(). Without this flag, that listener's render()
+// briefly repaints the still-open auth dialog (now with a session but the
+// old view) right before nav() switches to the dashboard, which looks like
+// the dialog "reloading" for a moment. The explicit flows set this while
+// they're mid-flight so the listener updates state silently and lets the
+// explicit flow's own nav()/render() do the (single) visible transition.
+let authFlowInProgress = false;
+
+async function boot(){
+  if(!isConfigured()){ render(); return; }
+
+  sb.auth.onAuthStateChange(async (_event, session)=>{
+    state.session = session;
+    // Supabase fires this on token refresh, tab focus, etc — not just on
+    // actual login/logout. Only wipe cached dashboard data when the
+    // signed-in user id has genuinely changed, otherwise a dashboard
+    // that's already loaded gets reset to "loading" and never refetches.
+    const newUserId = session?.user?.id || null;
+    if(newUserId !== lastAuthUserId){
+      await refreshProfile();
+      studentDataStatus = 'idle'; teacherDataStatus = 'idle'; adminDataStatus = 'idle';
+      lastAuthUserId = newUserId;
+    }
+    if(authFlowInProgress) return;
+    render();
+  });
+
+  const { data:{ session } } = await sb.auth.getSession();
+  state.session = session;
+  lastAuthUserId = session?.user?.id || null;
+  await refreshProfile();
+
+  // support ?teacher=<id> deep links (e.g. shared from a teacher's dashboard)
+  const params = new URLSearchParams(location.search);
+  const sharedTeacher = params.get('teacher');
+  if(sharedTeacher){ state.view = 'teacherProfile'; state.selectedTeacherId = sharedTeacher; state.selectedTeacherFrom = 'home'; }
+
+  ensureTeachers();
+  render();
+
+  // Ask for the person's location once on entry, so teacher cards can show
+  // a live distance right away. Skipped if we already have a location, or
+  // they've dismissed this prompt on a previous visit.
+  if(!state.myLocation && !locationPreviouslyDeclined){
+    openModal(locationPromptModal());
+  }
+}
+
+// Screens that are themselves part of the login/signup funnel — not worth
+// remembering as "where the user was", since landing back on them after
+// authenticating would just undo the flow instead of resuming a task.
+const AUTH_FUNNEL_VIEWS = new Set(['studentAuth','teacherAuth','teacherHome','teacherOnboarding','adminAuth']);
+// Snapshots the current screen right before sending the user off to log in
+// or sign up, so they can be dropped back exactly where they were —
+// including reopening things like the enquiry form — once they're done.
+// Called from every point on the site that redirects to studentAuth/
+// teacherAuth because an action needed an account first.
+function captureAuthRedirect(extra){
+  if(AUTH_FUNNEL_VIEWS.has(state.view)) return; // nothing worth remembering
+  state.postLoginRedirect = { view: state.view, selectedTeacherId: state.selectedTeacherId, selectedTeacherFrom: state.selectedTeacherFrom, ...extra };
+}
+// After logging in or signing up anywhere on the site, this sends the user
+// back to whatever screen prompted the login (restoring the teacher profile,
+// reopening the enquiry modal, etc.) instead of always dropping them on a
+// fixed default screen. Falls back to defaultView when there's nothing to
+// restore (e.g. they arrived at the auth screen directly, not mid-task).
+function goPostAuth(defaultView){
+  const redirect = state.postLoginRedirect;
+  state.postLoginRedirect = null;
+  if(redirect){
+    const { reopenEnquiryFor, ...navState } = redirect;
+    nav(navState.view, navState);
+    if(reopenEnquiryFor) openModal(enquiryModal(reopenEnquiryFor));
+    return;
+  }
+  nav(defaultView);
+}
+
+async function signUpStudent(name, email, password){
+  if(!name || !email || !password) return toast('Please fill in all fields', 'warn');
+  if(password.length < 6) return toast('Password must be at least 6 characters', 'warn');
+  authFlowInProgress = true;
+  try{
+    const { data, error } = await sb.auth.signUp({ email, password, options:{ data:{ full_name:name, role:'student' } } });
+    if(error) return toast('❌ ' + error.message, 'err');
+    if(data.user){
+      await sb.from('profiles').insert({ id:data.user.id, role:'student', full_name:name });
+    }
+    if(data.session){
+      state.session = data.session;
+      lastAuthUserId = data.session.user.id;
+      await refreshProfile();
+      studentDataStatus = 'idle';
+      toast('🎉 Account created!', 'ok');
+      goPostAuth('studentDashboard');
+    }else{
+      toast('✅ Account created — check your email to confirm, then log in.', 'ok');
+      state.studentAuthMode = 'login';
+      render();
+    }
+  }finally{
+    authFlowInProgress = false;
+  }
+}
+
+async function signInStudent(email, password){
+  if(!email || !password) return toast('Please fill in all fields', 'warn');
+  authFlowInProgress = true;
+  try{
+    const { data, error } = await sb.auth.signInWithPassword({ email, password });
+    if(error) return toast('❌ ' + error.message, 'err');
+    state.session = data.session;
+    lastAuthUserId = data.session?.user?.id || null;
+    await refreshProfile();
+    studentDataStatus = 'idle';
+    toast('👋 Logged in successfully', 'ok');
+    goPostAuth('studentDashboard');
+  }finally{
+    authFlowInProgress = false;
+  }
+}
+
+async function signUpTeacher(name, email, password){
+  if(!name || !email || !password) return toast('Please fill in all fields', 'warn');
+  if(password.length < 6) return toast('Password must be at least 6 characters', 'warn');
+  authFlowInProgress = true;
+  try{
+    const { data, error } = await sb.auth.signUp({ email, password, options:{ data:{ full_name:name, role:'teacher' } } });
+    if(error) return toast('❌ ' + error.message, 'err');
+    let freshTeacherProfile = null;
+    if(data.user){
+      await sb.from('profiles').insert({ id:data.user.id, role:'teacher', full_name:name });
+      freshTeacherProfile = {
+        profile_id:data.user.id, initials: name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase(),
+        color: AVATAR_COLORS[Math.floor(Math.random()*AVATAR_COLORS.length)], category:'academics',
+        subjects:[], location:'', lat:null, lng:null, fee_start:0, fee_unit:'/month', experience:'', bio:'',
+      };
+      await sb.from('teacher_profiles').insert(freshTeacherProfile);
+    }
+    if(data.session){
+      state.session = data.session;
+      lastAuthUserId = data.session.user.id;
+      await refreshProfile();
+      teacherDataStatus = 'idle';
+      // A brand-new teacher has no listing details yet — send them straight
+      // into a one-time onboarding panel instead of the (still-empty) dashboard.
+      state.selectedTeacherProfile = { ...freshTeacherProfile, schedule_slots: [] };
+      toast('🎉 Teacher account created — let\'s fill in your profile.', 'ok');
+      goPostAuth('teacherOnboarding');
+    }else{
+      toast('✅ Account created — check your email to confirm, then log in.', 'ok');
+      state.teacherAuthMode = 'login';
+      render();
+    }
+  }finally{
+    authFlowInProgress = false;
+  }
+}
+
+async function signInTeacher(email, password){
+  if(!email || !password) return toast('Please fill in all fields', 'warn');
+  authFlowInProgress = true;
+  try{
+    const { data, error } = await sb.auth.signInWithPassword({ email, password });
+    if(error) return toast('❌ ' + error.message, 'err');
+    state.session = data.session;
+    lastAuthUserId = data.session?.user?.id || null;
+    await refreshProfile();
+    teacherDataStatus = 'idle';
+    toast('👋 Welcome back', 'ok');
+    goPostAuth('teacherDashboard');
+  }finally{
+    authFlowInProgress = false;
+  }
+}
+
+// The "username" field is a cosmetic check only — it just avoids a confusing
+// "wrong password" error if someone fat-fingers the field. The actual gate is
+// Supabase auth (the account's real password) plus its profiles.role being
+// 'admin', which is what the delete policies in schema.sql check server-side.
+async function signInAdmin(username, password){
+  if(!username || !password) return toast('Please fill in all fields', 'warn');
+  if(username.trim().toLowerCase() !== 'admin') return toast('❌ Unknown admin username', 'err');
+  authFlowInProgress = true;
+  try{
+    const { data, error } = await sb.auth.signInWithPassword({ email: ADMIN_EMAIL, password });
+    if(error) return toast('❌ Incorrect password', 'err');
+    state.session = data.session;
+    lastAuthUserId = data.session?.user?.id || null;
+    await refreshProfile();
+    if(state.profile?.role !== 'admin'){
+      await sb.auth.signOut();
+      state.session = null; state.profile = null; lastAuthUserId = null;
+      toast('❌ This account is not set up as an admin', 'err');
+      return;
+    }
+    adminDataStatus = 'idle';
+    toast('🔓 Admin access granted', 'ok');
+    nav('adminDashboard');
+  }finally{
+    authFlowInProgress = false;
+  }
+}
+
+async function logout(){
+  await sb.auth.signOut();
+  nav(state.portal==='customer' ? 'home' : 'teacherHome');
+}
+
+// Step 1 of forgot-password: first check (via the email_exists() SQL
+// function — see schema.sql) whether this address is even registered. If
+// not, tell the person plainly and offer a sign-up link instead of
+// silently sending nothing. Only if it IS registered do we ask Supabase
+// to email a 6-digit code. This only works once the email template has
+// been switched to show {{ .Token }} — see README "Part 9".
+//
+// NOTE: this deliberately gives up Supabase's default "don't reveal
+// whether an email exists" protection (see the comment on email_exists()
+// in schema.sql) in exchange for a clearer error message here.
+async function requestPasswordReset(email){
+  if(!email) return toast('Please enter your email', 'warn');
+  const { data: exists, error: checkError } = await sb.rpc('email_exists', { check_email: email });
+  if(checkError) return toast('❌ ' + checkError.message, 'err');
+  fpEmail = email;
+  if(!exists){ openModal(forgotPasswordModal('not-found')); return; }
+  const { error } = await sb.auth.resetPasswordForEmail(email);
+  if(error) return toast('❌ ' + error.message, 'err');
+  toast('📧 A code is on its way', 'ok');
+  openModal(forgotPasswordModal('verify'));
+}
+
+// Step 2: verifying the code signs the user in with a short-lived
+// "recovery" session, which is exactly enough permission to call
+// updateUser() and set a new password — then they're left logged in.
+async function confirmPasswordReset(code, newPassword, confirmPassword){
+  if(!code || !newPassword || !confirmPassword) return toast('Please fill in all fields', 'warn');
+  if(newPassword.length < 6) return toast('Password must be at least 6 characters', 'warn');
+  if(newPassword !== confirmPassword) return toast("Passwords don't match", 'warn');
+  authFlowInProgress = true;
+  try{
+    const { data, error } = await sb.auth.verifyOtp({ email: fpEmail, token: code, type: 'recovery' });
+    if(error) return toast('❌ ' + error.message, 'err');
+    const { error: updateError } = await sb.auth.updateUser({ password: newPassword });
+    if(updateError) return toast('❌ ' + updateError.message, 'err');
+    state.session = data.session;
+    lastAuthUserId = data.session?.user?.id || null;
+    await refreshProfile();
+    closeModal();
+    toast('✅ Password updated — you\'re logged in', 'ok');
+    if(state.profile?.role==='teacher'){ teacherDataStatus = 'idle'; goPostAuth('teacherDashboard'); }
+    else if(state.profile?.role==='admin'){ nav('adminDashboard'); }
+    else{ studentDataStatus = 'idle'; goPostAuth('studentDashboard'); }
+  }finally{
+    authFlowInProgress = false;
+  }
+}
+
+/* =========================================================
+   SUPABASE — DATA LOADERS
+========================================================= */
+async function ensureTeachers(force){
+  if(teachersStatus==='ready' && !force) return;
+  teachersStatus = 'loading';
+  try{
+    const { data, error } = await sb
+      .from('teacher_profiles')
+      .select('*, profiles(full_name), schedule_slots(day,time,subj)');
+    if(error) throw error;
+    TEACHERS = data.map(t=>({
+      id: t.profile_id,
+      name: t.profiles?.full_name || 'Unnamed teacher',
+      initials: t.initials || '??',
+      color: t.color || '#6C5CE7',
+      category: t.category,
+      subjects: t.subjects || [],
+      location: t.location || 'Location not set',
+      lat: t.lat ?? null,
+      lng: t.lng ?? null,
+      mapsLink: t.maps_link || '',
+      rating: t.rating ?? 0,
+      reviews: t.reviews ?? 0,
+      feeStart: t.fee_start ?? 0,
+      feeUnit: t.fee_unit || '/month',
+      experience: t.experience || '—',
+      bio: t.bio || 'This teacher hasn\'t written a bio yet.',
+      schedule: t.schedule_slots || [],
+      reviewList: [],
+    }));
+    teachersStatus = 'ready';
+  }catch(err){
+    console.error('Failed to load teachers', err);
+    teachersStatus = 'error';
+  }
+  render();
+}
+
+async function ensureStudentData(force){
+  if(!state.session || state.profile?.role!=='student') return;
+  if(studentDataStatus==='ready' && !force) return;
+  studentDataStatus = 'loading';
+  try{
+    const uid = state.session.user.id;
+    const [{data:enrollments, error:e1}, {data:payments, error:e2}, {data:reviews, error:e3}] = await Promise.all([
+      sb.from('enrollments').select('*, teacher_profiles(profiles(full_name))').eq('student_id', uid).order('created_at',{ascending:false}),
+      sb.from('payments').select('*').eq('student_id', uid).order('paid_at',{ascending:false}),
+      sb.from('reviews').select('*').eq('student_id', uid),
+    ]);
+    if(e1) throw e1; if(e2) throw e2; if(e3) throw e3;
+    myEnrollments = enrollments.map(e=>({
+      id:e.id, teacherId:e.teacher_id, teacherName: e.teacher_profiles?.profiles?.full_name || 'Teacher',
+      subject:e.subject, schedule:e.schedule, fee:e.fee, status:e.status, dueDate:e.due_date || '—',
+    }));
+    myPayments = payments;
+    myReviews = reviews;
+    studentDataStatus = 'ready';
+  }catch(err){
+    console.error('Failed to load student dashboard data', err);
+    studentDataStatus = 'error';
+  }
+  render();
+}
+
+async function ensureTeacherData(force){
+  if(!state.session || state.profile?.role!=='teacher') return;
+  if(teacherDataStatus==='ready' && !force) return;
+  teacherDataStatus = 'loading';
+  try{
+    const uid = state.session.user.id;
+    const [{data, error}, {data:enquiries, error:eqErr}] = await Promise.all([
+      sb.from('enrollments').select('*, profiles(full_name)').eq('teacher_id', uid).order('created_at',{ascending:false}),
+      sb.from('enquiries').select('*, profiles(full_name)').eq('teacher_id', uid).order('created_at',{ascending:false}),
+    ]);
+    if(error) throw error;
+    if(eqErr) throw eqErr;
+    myStudents = data.map(e=>({
+      enrollmentId:e.id, studentId:e.student_id, name: e.profiles?.full_name || 'Student',
+      grade:e.grade || '—', subject:e.subject, feeStatus:e.status, fee:e.fee, schedule:e.schedule,
+    }));
+    myEnquiries = enquiries.map(q=>({
+      id:q.id, studentId:q.student_id, name: q.profiles?.full_name || 'A parent',
+      message:q.message, createdAt:q.created_at,
+    }));
+    teacherDataStatus = 'ready';
+  }catch(err){
+    console.error('Failed to load teacher dashboard data', err);
+    teacherDataStatus = 'error';
+  }
+  render();
+}
+
+async function ensureTeacherReviews(teacherId, force){
+  if(teacherReviewsForId===teacherId && teacherReviewsStatus==='ready' && !force) return;
+  teacherReviewsForId = teacherId;
+  teacherReviewsStatus = 'loading';
+  try{
+    const { data, error } = await sb.from('reviews').select('rating, comment, created_at, profiles(full_name)').eq('teacher_id', teacherId).order('created_at',{ascending:false}).limit(30);
+    if(error) throw error;
+    teacherReviews = data;
+    teacherReviewsStatus = 'ready';
+  }catch(err){
+    console.error('Failed to load reviews', err);
+    teacherReviewsStatus = 'error';
+  }
+  render();
+}
+
+// Loads every profile for the admin panel. Deliberately two plain queries
+// (rather than an embedded join) merged client-side, so it works the same
+// regardless of PostgREST's embed direction for the profiles<->teacher_profiles
+// relationship. RLS still applies: 'profiles' and 'teacher_profiles' are
+// both publicly readable, so this works whether or not the viewer is an admin —
+// it's the delete action below that's actually gated (see schema.sql).
+async function ensureAdminData(force){
+  if(!state.session || state.profile?.role!=='admin') return;
+  if(adminDataStatus==='ready' && !force) return;
+  adminDataStatus = 'loading';
+  try{
+    const [{data:profiles, error}, {data:teacherRows, error:tErr}] = await Promise.all([
+      sb.from('profiles').select('*').order('created_at',{ascending:false}),
+      sb.from('teacher_profiles').select('profile_id, category, subjects, fee_start, fee_unit, rating, reviews'),
+    ]);
+    if(error) throw error;
+    if(tErr) throw tErr;
+    const teacherById = {};
+    teacherRows.forEach(t=>{ teacherById[t.profile_id] = t; });
+    ADMIN_STUDENTS = profiles.filter(p=>p.role==='student');
+    ADMIN_TEACHERS = profiles.filter(p=>p.role==='teacher').map(p=>({ ...p, listing: teacherById[p.id] || null }));
+    adminDataStatus = 'ready';
+  }catch(err){
+    console.error('Failed to load admin data', err);
+    adminDataStatus = 'error';
+  }
+  render();
+}
+
+/* =========================================================
+   SHARED CHROME (navbar)
+========================================================= */
+function navbar(){
+  const c = state.portal;
+  const loggedIn = !!state.session;
+  return `
+  <div class="nav">
+    <div class="wrap">
+      <div class="nav-inner glass">
+        <div class="logo" style="cursor:pointer" data-action="go-home">
+          <div class="logo-mark">🎓</div> NearPath Tutors
+        </div>
+        <div class="nav-links">
+          ${c==='customer' ? `
+            <button data-action="go" data-view="home">Home</button>
+            <button data-action="go" data-view="browse">Browse Teachers</button>
+            ${loggedIn && state.profile?.role==='student' ? `<button data-action="go" data-view="studentDashboard">My Dashboard</button>` : ''}
+          ` : `
+            <button data-action="go" data-view="teacherHome">Overview</button>
+            ${loggedIn && state.profile?.role==='teacher' ? `<button data-action="go" data-view="teacherDashboard">Dashboard</button>` : ''}
+          `}
+        </div>
+        <div style="display:flex; gap:10px; align-items:center;">
+          <div class="pill ${c==='customer'?'active':''}" data-action="switch-portal" data-portal="customer">👪 Parents</div>
+          <div class="pill ${c==='teacher'?'active':''}" data-action="switch-portal" data-portal="teacher">🍎 Teachers</div>
+          <button class="btn btn-ghost btn-sm" data-action="toggle-theme" title="Switch to ${currentTheme()==='dark'?'light':'dark'} theme" aria-label="Toggle theme">${currentTheme()==='dark' ? '☀️' : '🌙'}</button>
+          <button class="btn btn-ghost btn-sm" data-action="go-admin" title="Admin panel" aria-label="Admin panel">🛡️</button>
+          ${loggedIn
+            ? `<button class="btn btn-ghost btn-sm" data-action="logout">🚪 Log out</button>`
+            : `<button class="btn btn-primary btn-sm" data-action="go" data-view="${c==='customer'?'studentAuth':'teacherAuth'}" data-mode="login">Log in</button>`}
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+/* =========================================================
+   SETUP-MISSING SCREEN
+========================================================= */
+function setupMissingScreen(){
+  return `
+  <div class="wrap view-transition" style="padding-top:100px; text-align:center;">
+    <div class="glass" style="padding:48px; max-width:520px; margin:0 auto;">
+      <div style="font-size:28px;">🛠️</div>
+      <h2 style="margin-top:12px; font-size:19px;">Backend not connected yet</h2>
+      <p class="muted" style="margin-top:8px; font-size:14px; line-height:1.6;">
+        This site needs a Supabase project to handle logins and store data.
+        Open <code>index.html</code>, find <code>SUPABASE_URL</code> and
+        <code>SUPABASE_ANON_KEY</code> near the top of the script, and fill
+        in your project's values. See README.md for the full walkthrough.
+      </p>
+    </div>
+  </div>`;
+}
+
+/* =========================================================
+   CUSTOMER PORTAL — HOME
+========================================================= */
+function viewHome(){
+  const featured = TEACHERS.slice(0,4);
+  return `
+  ${navbar()}
+  <div class="wrap view-transition" style="padding-top:40px;">
+    <div class="glass fade-in" style="padding:56px 44px; text-align:center; position:relative; overflow:hidden;">
+      <div class="eyebrow">Find teachers within your neighbourhood</div>
+      <h1 style="font-size:44px; margin:14px 0 16px; max-width:720px; margin-left:auto; margin-right:auto; line-height:1.15;">A great teacher is usually closer than you think</h1>
+      <p class="muted" style="font-size:16px; max-width:560px; margin:0 auto 30px;">Browse rated tutors, sports coaches and skill teachers near you — check timings, fees and reviews before you enquire.</p>
+      <div style="display:flex; gap:10px; max-width:600px; margin:0 auto;" class="hide-mobile">
+        <input class="input" id="heroSearch" placeholder="Search “Cricket coach”, “Abacus”, “Guitar”…" style="flex:1;" />
+        <button class="btn btn-primary" data-action="search-from-hero">Search</button>
+      </div>
+      <div class="scroll-x" style="justify-content:center; margin-top:22px;">
+        ${CATS.map(c=>`<div class="pill" data-action="filter-cat" data-cat="${c.id}">${c.icon} ${c.label}</div>`).join('')}
+      </div>
+    </div>
+
+    <div style="margin-top:56px;" class="fade-in">
+      <div style="display:flex; align-items:baseline; justify-content:space-between; margin-bottom:20px;">
+        <h2 style="font-size:24px;">Featured near you</h2>
+        <button class="btn btn-ghost btn-sm" data-action="go" data-view="browse">View all →</button>
+      </div>
+      ${featured.length ? `<div class="grid-cards stagger">${featured.map(teacherCard).join('')}</div>` : `<div class="glass" style="padding:40px; text-align:center;"><p class="muted">No teachers have listed themselves yet — be the first!</p><button class="btn btn-primary btn-sm" style="margin-top:12px;" data-action="register-as-teacher">Register as a teacher</button></div>`}
+    </div>
+
+    <div style="margin-top:64px; display:grid; grid-template-columns:repeat(3,1fr); gap:20px;" class="fade-in grid-2">
+      ${[
+        {icon:'⭐', t:'Verified ratings', d:'Every teacher is reviewed by real parents after real classes.'},
+        {icon:'📅', t:'See the schedule upfront', d:'Weekly timings and fees are shown before you even enquire.'},
+        {icon:'💳', t:'Track fees online', d:'One dashboard to track classes, dues and payment history.'},
+      ].map(f=>`
+        <div class="glass card" style="padding:26px;">
+          <div style="font-size:26px;">${f.icon}</div>
+          <h3 style="font-size:17px; margin-top:12px;">${f.t}</h3>
+          <p class="muted" style="font-size:14px; margin-top:6px;">${f.d}</p>
+        </div>`).join('')}
+    </div>
+
+    <div style="margin:80px 0 40px; text-align:center; padding:36px; opacity:0.75;">
+      <p class="muted" style="font-size:13px;">© 2026 NearPath Tutors</p>
+    </div>
+  </div>`;
+}
+
+function teacherCard(t){
+  const cat = CATS.find(c=>c.id===t.category) || CATS[0];
+  return `
+  <div class="glass card" style="padding:20px; cursor:pointer;" data-action="view-teacher" data-id="${t.id}">
+    <div style="display:flex; gap:12px; align-items:center;">
+      <div class="avatar" style="width:52px;height:52px;background:${t.color};font-size:17px;">${t.initials}</div>
+      <div style="flex:1; min-width:0;">
+        <div style="font-weight:700; font-size:15.5px;">${t.name}</div>
+        <div class="muted" style="font-size:12.5px;">${cat.icon} ${t.subjects.join(', ') || 'No subjects listed'}</div>
+      </div>
+      ${ratingBadgeSmall(t)}
+    </div>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:16px;">
+      <div class="muted" style="font-size:12.5px;">📍 ${distanceToTeacher(t) || t.location}</div>
+      <div style="font-family:var(--mono); font-weight:700; font-size:14px;">${t.feeStart ? '₹'+t.feeStart : 'Fee not set'}<span class="muted" style="font-weight:400;">${t.feeStart?t.feeUnit:''}</span></div>
+    </div>
+    <button class="btn btn-ghost btn-block btn-sm" style="margin-top:14px;" data-action="view-teacher" data-id="${t.id}">View Profile</button>
+  </div>`;
+}
+
+/* =========================================================
+   CUSTOMER PORTAL — BROWSE / SEARCH
+========================================================= */
+function filteredTeachers(){
+  const f = state.filters;
+  const list = TEACHERS.filter(t=>{
+    if(f.category!=='all' && t.category!==f.category) return false;
+    if(f.query && !(t.name.toLowerCase().includes(f.query.toLowerCase()) || t.subjects.join(' ').toLowerCase().includes(f.query.toLowerCase()))) return false;
+    return true;
+  });
+  if(f.sortDistance && state.myLocation){
+    // Nearest to farthest. Teachers without saved coordinates have no
+    // known distance, so they're pushed to the end rather than dropped.
+    list.sort((a,b)=>{
+      const da = distanceKmToTeacher(a), db = distanceKmToTeacher(b);
+      if(da==null && db==null) return 0;
+      if(da==null) return 1;
+      if(db==null) return -1;
+      return da - db;
+    });
+  }
+  return list;
+}
+
+function viewBrowse(){
+  const list = filteredTeachers();
+  return `
+  ${navbar()}
+  <div class="wrap view-transition" style="padding-top:32px;">
+    <h1 style="font-size:28px; margin-bottom:6px;">Browse teachers</h1>
+    <p class="muted" style="margin-bottom:24px;">${list.length} teacher${list.length!==1?'s':''} found</p>
+    <div class="grid-2">
+      <div>
+        <div class="glass" style="padding:16px; margin-bottom:20px;">
+          <input class="input" placeholder="Search by name or subject…" id="browseSearch" value="${state.filters.query}" oninput="state.filters.query=this.value; renderList();" />
+        </div>
+        <div class="glass" style="padding:14px 16px; margin-bottom:20px; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+          ${state.myLocation
+            ? `<div class="muted" style="font-size:12.5px;">📍 Showing distance from your current location</div>
+               <button class="btn btn-ghost btn-sm" data-action="use-my-location">Update location</button>`
+            : `<div class="muted" style="font-size:12.5px;">Share your location to see how far each teacher is</div>
+               <button class="btn btn-primary btn-sm" data-action="use-my-location" ${state.locatingMe?'disabled':''}>${state.locatingMe?'Locating…':'📍 Use my location'}</button>`}
+        </div>
+        <div class="grid-cards stagger" id="teacherList">
+          ${list.length ? list.map(teacherCard).join('') : `<div class="glass" style="padding:40px; text-align:center; grid-column:1/-1;"><div style="font-size:32px;">🔍</div><p class="muted" style="margin-top:10px;">No teachers match these filters. Try widening your search.</p></div>`}
+        </div>
+      </div>
+      <div>
+        <div class="glass" style="padding:22px; position:sticky; top:100px;">
+          <h3 style="font-size:15px; margin-bottom:16px;">Filters</h3>
+          <div class="field">
+            <label class="field-label">Category</label>
+            <div style="display:flex; flex-wrap:wrap; gap:8px;">
+              <div class="pill ${state.filters.category==='all'?'active':''}" data-action="set-filter-cat" data-cat="all">All</div>
+              ${CATS.map(c=>`<div class="pill ${state.filters.category===c.id?'active':''}" data-action="set-filter-cat" data-cat="${c.id}">${c.icon} ${c.label}</div>`).join('')}
+            </div>
+          </div>
+          <div class="field">
+            <label class="field-label">Sort</label>
+            ${state.myLocation ? `
+              <div class="pill ${state.filters.sortDistance?'active':''}" style="display:inline-flex;" data-action="toggle-sort-distance">📍 Nearest to farthest</div>
+            ` : `
+              <p class="muted" style="font-size:12.5px; margin-bottom:8px;">Share your location to sort teachers by distance.</p>
+              <button class="btn btn-primary btn-sm" data-action="use-my-location" ${state.locatingMe?'disabled':''}>${state.locatingMe?'Locating…':'📍 Use my location'}</button>
+            `}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+function renderList(){
+  const list = filteredTeachers();
+  document.getElementById('teacherList').outerHTML = `<div class="grid-cards stagger" id="teacherList">${list.length? list.map(teacherCard).join(''): `<div class="glass" style="padding:40px; text-align:center; grid-column:1/-1;"><div style="font-size:32px;">🔍</div><p class="muted" style="margin-top:10px;">No teachers match these filters.</p></div>`}</div>`;
+}
+
+/* =========================================================
+   CUSTOMER PORTAL — TEACHER PROFILE
+========================================================= */
+function viewTeacherProfile(){
+  const t = TEACHERS.find(x=>x.id===state.selectedTeacherId);
+  if(!t) return viewBrowse();
+  const cat = CATS.find(c=>c.id===t.category) || CATS[0];
+  return `
+  ${navbar()}
+  <div class="wrap view-transition" style="padding-top:32px;">
+    <button class="btn btn-ghost btn-sm" data-action="go" data-view="${state.selectedTeacherFrom==='browse'?'browse':'home'}" style="margin-bottom:20px;">← Back to ${state.selectedTeacherFrom==='browse'?'search':'home'}</button>
+    <div class="grid-2">
+      <div>
+        <div class="glass" style="padding:28px;">
+          <div style="display:flex; gap:18px; align-items:center;">
+            <div class="avatar" style="width:78px;height:78px;background:${t.color};font-size:26px;">${t.initials}</div>
+            <div>
+              <h1 style="font-size:24px;">${t.name}</h1>
+              <div class="muted" style="font-size:13.5px; margin-top:4px;">${cat.icon} ${t.subjects.join(' · ') || 'No subjects listed'} &nbsp;·&nbsp; ${t.experience} experience</div>
+              <div style="display:flex; align-items:center; gap:10px; margin-top:8px;">
+                ${t.reviews ? `
+                  <span class="stars" style="color:${ratingColor(t.rating)};">${starString(t.rating)}</span>
+                  <span style="font-weight:700; font-size:14px; color:${ratingColor(t.rating)};">${t.rating}</span>
+                  <span class="muted" style="font-size:13px;">(${t.reviews} review${t.reviews!==1?'s':''})</span>
+                ` : `<span class="badge badge-blue">🆕 New — no reviews yet</span>`}
+              </div>
+            </div>
+          </div>
+          <p style="margin-top:20px; line-height:1.7; font-size:14.5px;" class="muted">${t.bio}</p>
+          <div style="display:flex; gap:16px; margin-top:20px; flex-wrap:wrap;">
+            <div class="badge badge-blue">📍 ${t.location}</div>
+            ${distanceToTeacher(t) ? `<div class="badge badge-green">🚗 ${distanceToTeacher(t)}</div>` : `<div class="badge" style="cursor:pointer;" data-action="use-my-location">📍 See distance from you</div>`}
+            ${t.mapsLink ? `<a href="${t.mapsLink}" target="_blank" rel="noopener noreferrer" class="badge" style="background:rgba(79,168,245,0.15); color:var(--blue); cursor:pointer;">🗺️ Open in Google Maps</a>` : ''}
+          </div>
+        </div>
+
+        <div class="glass" style="padding:28px; margin-top:20px;">
+          <h3 style="font-size:16px; margin-bottom:16px;">Weekly schedule</h3>
+          ${t.schedule.length ? `<div style="display:flex; flex-direction:column; gap:10px;">
+            ${t.schedule.map(s=>`
+            <div class="ticket">
+              <div class="ticket-stub" style="background:${t.color}22; color:${t.color};">
+                <div class="t-day">${s.day.toUpperCase()}</div>
+                <div class="t-time">${s.time.split('–')[0]}</div>
+              </div>
+              <div class="ticket-perf"></div>
+              <div class="ticket-body">
+                <div style="font-weight:700; font-size:14.5px;">${s.subj}</div>
+                <div class="muted" style="font-size:12.5px; font-family:var(--mono); margin-top:3px;">${s.time}</div>
+              </div>
+            </div>`).join('')}
+          </div>` : `<p class="muted" style="font-size:13.5px;">This teacher hasn't published a schedule yet.</p>`}
+        </div>
+
+        <div class="glass" style="padding:28px; margin-top:20px;">
+          <h3 style="font-size:16px; margin-bottom:16px;">Reviews${t.reviews ? ` (${t.reviews})` : ''}</h3>
+          ${reviewsSectionBody()}
+        </div>
+      </div>
+
+      <div>
+        <div class="glass" style="padding:24px; position:sticky; top:100px;">
+          <div class="eyebrow">Starting fee</div>
+          <div style="font-family:var(--mono); font-weight:700; font-size:30px; margin-top:6px;">${t.feeStart ? '₹'+t.feeStart : '—'}<span class="muted" style="font-size:15px; font-weight:400;">${t.feeStart?t.feeUnit:''}</span></div>
+          <button class="btn btn-primary btn-block" style="margin-top:18px;" data-action="open-enquiry" data-id="${t.id}">✉️ Send enquiry</button>
+          <button class="btn btn-ghost btn-block" style="margin-top:10px;" data-action="enroll-now" data-id="${t.id}">Enroll with this teacher</button>
+          ${t.mapsLink ? `<a href="${t.mapsLink}" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-block" style="margin-top:10px;">🗺️ Get directions</a>` : ''}
+          <hr class="divider-dashed" style="margin:20px 0;">
+          <div style="font-size:13px;" class="muted">
+            <div style="display:flex; justify-content:space-between; padding:6px 0;"><span>Experience</span><span style="color:var(--text)">${t.experience}</span></div>
+            <div style="display:flex; justify-content:space-between; padding:6px 0;"><span>Category</span><span style="color:var(--text)">${cat.icon} ${cat.label}</span></div>
+            <div style="display:flex; justify-content:space-between; padding:6px 0;"><span>Location</span><span style="color:var(--text)">${t.location}</span></div>
+            ${distanceToTeacher(t) ? `<div style="display:flex; justify-content:space-between; padding:6px 0;"><span>Distance</span><span style="color:var(--text)">${distanceToTeacher(t)}</span></div>` : ''}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function reviewsSectionBody(){
+  if(teacherReviewsStatus==='loading') return `<p class="muted" style="font-size:13.5px;">Loading reviews…</p>`;
+  if(teacherReviewsStatus==='error') return `<p class="muted" style="font-size:13.5px;">Couldn't load reviews right now.</p>`;
+  if(!teacherReviews.length) return `<p class="muted" style="font-size:13.5px;">No reviews yet — be the first parent to leave one after a class.</p>`;
+  return `<div style="display:flex; flex-direction:column; gap:14px;">
+    ${teacherReviews.map(r=>`
+      <div style="padding-bottom:14px; border-bottom:1px solid var(--divider);">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span style="font-weight:700; font-size:13.5px;">${r.profiles?.full_name || 'A parent'}</span>
+          <span class="stars" style="font-size:12px; color:${ratingColor(r.rating)};">${starString(r.rating)}</span>
+        </div>
+        ${r.comment ? `<p class="muted" style="font-size:13px; margin-top:6px; line-height:1.6;">${r.comment}</p>` : ''}
+      </div>`).join('')}
+  </div>`;
+}
+
+/* =========================================================
+   CUSTOMER PORTAL — AUTH
+========================================================= */
+// A "Continue with Google" button + "or" divider, shared by the student
+// and teacher auth screens. `action` tells the click handler which portal
+// (and therefore which role) a brand-new Google sign-in should become —
+// see signInWithGoogle() below.
+function googleAuthButton(action){
+  return `
+  <button type="button" class="btn btn-block" data-action="${action}"
+    style="background:#fff; color:#3c4043; border:1px solid var(--divider); display:flex; align-items:center; justify-content:center; gap:10px; margin-bottom:18px; font-weight:600;">
+    <svg width="18" height="18" viewBox="0 0 48 48" style="flex-shrink:0;">
+      <path fill="#FFC107" d="M43.611,20.083H42V20H24v8h11.303c-1.649,4.657-6.08,8-11.303,8c-6.627,0-12-5.373-12-12s5.373-12,12-12c3.059,0,5.842,1.154,7.961,3.039l5.657-5.657C34.046,6.053,29.268,4,24,4C12.955,4,4,12.955,4,24s8.955,20,20,20s20-8.955,20-20C44,22.659,43.862,21.35,43.611,20.083z"/>
+      <path fill="#FF3D00" d="M6.306,14.691l6.571,4.819C14.655,15.108,18.961,12,24,12c3.059,0,5.842,1.154,7.961,3.039l5.657-5.657C34.046,6.053,29.268,4,24,4C16.318,4,9.656,8.337,6.306,14.691z"/>
+      <path fill="#4CAF50" d="M24,44c5.166,0,9.86-1.977,13.409-5.192l-6.19-5.238C29.211,35.091,26.715,36,24,36c-5.202,0-9.619-3.317-11.283-7.946l-6.522,5.025C9.505,39.556,16.227,44,24,44z"/>
+      <path fill="#1976D2" d="M43.611,20.083H42V20H24v8h11.303c-0.792,2.237-2.231,4.166-4.087,5.571c0.001-0.001,0.002-0.001,0.003-0.002l6.19,5.238C36.971,39.205,44,34,44,24C44,22.659,43.862,21.35,43.611,20.083z"/>
+    </svg>
+    Continue with Google
+  </button>
+  <div style="display:flex; align-items:center; gap:12px; margin:0 0 18px;">
+    <div style="flex:1; height:1px; background:var(--divider);"></div>
+    <span class="muted" style="font-size:12px;">or</span>
+    <div style="flex:1; height:1px; background:var(--divider);"></div>
+  </div>`;
+}
+
+function viewStudentAuth(){
+  if(state.session && state.profile?.role==='student') return viewStudentDashboard();
+  const mode = state.studentAuthMode;
+  return `
+  ${navbar()}
+  <div class="wrap view-transition" style="padding-top:60px; display:flex; justify-content:center;">
+    <div class="glass fade-in" style="padding:36px; width:100%; max-width:420px;">
+      <div class="eyebrow">Parent / Student portal</div>
+      <h2 style="font-size:24px; margin:8px 0 22px;">${mode==='login' ? 'Welcome back' : 'Create your account'}</h2>
+      ${googleAuthButton('google-signin-student')}
+      ${mode==='signup' ? `<div class="field"><label class="field-label">Your name</label><input class="input" id="suName" placeholder="Parent's name"/></div>` : ''}
+      <div class="field"><label class="field-label">Email</label><input class="input" id="suEmail" placeholder="you@example.com" type="email"/></div>
+      <div class="field"><label class="field-label">Password</label><input class="input" id="suPassword" placeholder="••••••••" type="password"/></div>
+      ${mode==='login' ? `<p style="text-align:right; margin:-8px 0 4px;"><a style="color:var(--primary); font-weight:600; cursor:pointer; font-size:12.5px;" data-action="forgot-password">Forgot password?</a></p>` : ''}
+      <button class="btn btn-primary btn-block" data-action="${mode==='login'?'login-student':'signup-student'}">${mode==='login'?'Log in':'Create account'}</button>
+      <p class="muted" style="text-align:center; font-size:13px; margin-top:16px;">
+        ${mode==='login'
+          ? `New here? <a style="color:var(--primary); font-weight:600; cursor:pointer;" data-action="student-auth-mode" data-mode="signup">Create an account →</a>`
+          : `Already have an account? <a style="color:var(--primary); font-weight:600; cursor:pointer;" data-action="student-auth-mode" data-mode="login">Log in →</a>`}
+      </p>
+    </div>
+  </div>`;
+}
+
+/* =========================================================
+   CUSTOMER PORTAL — STUDENT DASHBOARD
+========================================================= */
+function viewStudentDashboard(){
+  if(!state.session || state.profile?.role!=='student') return viewStudentAuth();
+  if(studentDataStatus!=='ready'){
+    return `${navbar()}${studentDataStatus==='error' ? errorScreen('dashboard') : loadingScreen('your dashboard')}`;
+  }
+  const totalDue = myEnrollments.filter(e=>e.status!=='paid').reduce((s,e)=>s+e.fee,0);
+  return `
+  ${navbar()}
+  <div class="wrap view-transition" style="padding-top:32px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:24px;">
+      <div>
+        <div class="eyebrow">Student dashboard</div>
+        <h1 style="font-size:26px; margin-top:4px;">Hi ${state.profile.full_name || 'there'} 👋</h1>
+      </div>
+    </div>
+
+    <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-bottom:24px;" class="grid-2">
+      <div class="glass stat-card"><div class="eyebrow">Active enrollments</div><div class="stat-num">${myEnrollments.length}</div></div>
+      <div class="glass stat-card"><div class="eyebrow">Fee due</div><div class="stat-num" style="color:${totalDue>0?'var(--red)':'var(--green)'}">₹${totalDue}</div></div>
+      <div class="glass stat-card"><div class="eyebrow">Payments made</div><div class="stat-num">${myPayments.length}</div></div>
+    </div>
+
+    <div class="grid-2">
+      <div>
+        <div class="glass" style="padding:24px;">
+          <h3 style="font-size:16px; margin-bottom:16px;">My enrollments</h3>
+          ${myEnrollments.length ? `<div style="display:flex; flex-direction:column; gap:10px;">
+            ${myEnrollments.map(e=>{
+              const myReview = myReviews.find(r=>r.enrollment_id===e.id);
+              return `<div class="ticket">
+                <div class="ticket-stub" style="background:#6C5CE722; color:#6C5CE7;"><div class="t-day">${(e.schedule||'').slice(0,3).toUpperCase()||'—'}</div></div>
+                <div class="ticket-perf"></div>
+                <div class="ticket-body" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                  <div>
+                    <div style="font-weight:700; font-size:14.5px;">${e.subject}</div>
+                    <div class="muted" style="font-size:12.5px;">with ${e.teacherName} · ${e.schedule||'schedule TBC'}</div>
+                  </div>
+                  <div style="display:flex; align-items:center; gap:8px;">
+                    <span class="badge ${e.status==='paid'?'badge-green':e.status==='due'?'badge-amber':'badge-red'}">${e.status.toUpperCase()}</span>
+                    ${myReview
+                      ? `<span class="badge badge-blue" style="cursor:pointer;" data-action="open-review" data-id="${e.id}">${starString(myReview.rating)[0]} Edit review</span>`
+                      : `<button class="btn btn-ghost btn-sm" data-action="open-review" data-id="${e.id}">⭐ Leave a review</button>`}
+                  </div>
+                </div>
+              </div>`;}).join('')}
+          </div>` : `<p class="muted" style="font-size:13.5px;">No enrollments yet — browse teachers and enroll to get started.</p><button class="btn btn-primary btn-sm" style="margin-top:12px;" data-action="go" data-view="browse">Browse teachers</button>`}
+        </div>
+      </div>
+
+      <div>
+        <div class="glass" style="padding:24px; margin-bottom:20px;">
+          <h3 style="font-size:16px; margin-bottom:16px;">Fee status</h3>
+          ${myEnrollments.length ? `<div style="display:flex; flex-direction:column; gap:12px;">
+            ${myEnrollments.map(e=>`
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:12px; border-radius:12px; background:var(--divider-soft);">
+              <div>
+                <div style="font-weight:600; font-size:13.5px;">${e.subject}</div>
+                <div class="muted" style="font-size:12px;">${e.teacherName}</div>
+              </div>
+              <div style="text-align:right;">
+                <div style="font-family:var(--mono); font-weight:700; font-size:14px;">₹${e.fee}</div>
+                <span class="badge ${e.status==='paid'?'badge-green':e.status==='due'?'badge-amber':'badge-red'}">${e.status.toUpperCase()}</span>
+              </div>
+            </div>`).join('')}
+          </div>` : `<p class="muted" style="font-size:13px;">Nothing to show yet.</p>`}
+          ${totalDue>0 ? `<button class="btn btn-primary btn-block" style="margin-top:16px;" data-action="open-pay">💳 Mark ₹${totalDue} as paid</button>` : ''}
+        </div>
+
+        <div class="glass" style="padding:24px;">
+          <h3 style="font-size:16px; margin-bottom:14px;">Payment history</h3>
+          ${myPayments.length ? `<table class="data-table">
+            <thead><tr><th>Date</th><th>Amt</th><th>Method</th></tr></thead>
+            <tbody>
+              ${myPayments.map(p=>`<tr><td class="muted">${new Date(p.paid_at).toLocaleDateString()}</td><td style="font-family:var(--mono)">₹${p.amount}</td><td class="muted">${p.method}</td></tr>`).join('')}
+            </tbody>
+          </table>` : `<p class="muted" style="font-size:13px;">No payments recorded yet.</p>`}
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+/* =========================================================
+   TEACHER PORTAL — MARKETING HOME
+========================================================= */
+function viewTeacherHome(){
+  return `
+  ${navbar()}
+  <div class="wrap view-transition" style="padding-top:40px;">
+    <div class="glass fade-in" style="padding:56px 44px; text-align:center;">
+      <div class="eyebrow">For tutors, coaches & skill teachers</div>
+      <h1 style="font-size:40px; margin:14px 0 16px; max-width:640px; margin-left:auto; margin-right:auto; line-height:1.15;">Fill your batches. Get paid on time. Skip the spreadsheets.</h1>
+      <p class="muted" style="font-size:16px; max-width:520px; margin:0 auto 30px;">List your profile, manage your students and schedule, and track fees — all from one dashboard.</p>
+      <div style="display:flex; gap:12px; justify-content:center;">
+        <button class="btn btn-primary" data-action="go" data-view="teacherAuth" data-mode="signup">Register as a teacher</button>
+        <button class="btn btn-ghost" data-action="go" data-view="teacherAuth" data-mode="login">Log in</button>
+      </div>
+    </div>
+    <div style="margin-top:56px; display:grid; grid-template-columns:repeat(4,1fr); gap:16px;" class="grid-2 fade-in">
+      ${[
+        {icon:'👥',t:'Manage students',d:'See who has enrolled with you in one place.'},
+        {icon:'📅',t:'Weekly schedule',d:'Set your timings once, students see it instantly.'},
+        {icon:'💰',t:'Fee tracking',d:'See who has paid and who is due, at a glance.'},
+        {icon:'⭐',t:'Build your rating',d:'Reviews from real parents help you get discovered.'},
+      ].map(f=>`<div class="glass card" style="padding:22px;"><div style="font-size:24px;">${f.icon}</div><h3 style="font-size:15px; margin-top:10px;">${f.t}</h3><p class="muted" style="font-size:13px; margin-top:5px;">${f.d}</p></div>`).join('')}
+    </div>
+  </div>`;
+}
+
+/* =========================================================
+   TEACHER PORTAL — AUTH
+========================================================= */
+function viewTeacherAuth(){
+  if(state.session && state.profile?.role==='teacher') return viewTeacherDashboard();
+  const mode = state.teacherAuthMode;
+  return `
+  ${navbar()}
+  <div class="wrap view-transition" style="padding-top:60px; display:flex; justify-content:center;">
+    <div class="glass fade-in" style="padding:36px; width:100%; max-width:420px;">
+      <div class="eyebrow">Teacher portal</div>
+      <h2 style="font-size:24px; margin:8px 0 22px;">${mode==='login' ? 'Welcome back' : 'Register as a teacher'}</h2>
+      ${googleAuthButton('google-signin-teacher')}
+      ${mode==='signup' ? `<div class="field"><label class="field-label">Your name</label><input class="input" id="tuName" placeholder="Full name"/></div>` : ''}
+      <div class="field"><label class="field-label">Email</label><input class="input" id="tuEmail" placeholder="you@example.com" type="email"/></div>
+      <div class="field"><label class="field-label">Password</label><input class="input" id="tuPassword" placeholder="••••••••" type="password"/></div>
+      ${mode==='login' ? `<p style="text-align:right; margin:-8px 0 4px;"><a style="color:var(--primary); font-weight:600; cursor:pointer; font-size:12.5px;" data-action="forgot-password">Forgot password?</a></p>` : ''}
+      <button class="btn btn-primary btn-block" data-action="${mode==='login'?'login-teacher':'signup-teacher'}">${mode==='login'?'Log in':'Create account'}</button>
+      <p class="muted" style="text-align:center; font-size:13px; margin-top:16px;">
+        ${mode==='login'
+          ? `New here? <a style="color:var(--primary); font-weight:600; cursor:pointer;" data-action="teacher-auth-mode" data-mode="signup">Register as a teacher →</a>`
+          : `Already have an account? <a style="color:var(--primary); font-weight:600; cursor:pointer;" data-action="teacher-auth-mode" data-mode="login">Log in →</a>`}
+      </p>
+    </div>
+  </div>`;
+}
+
+function teacherSidebar(){
+  const tabs = [
+    {id:'overview', icon:'📊', label:'Overview'},
+    {id:'students', icon:'👥', label:'Students'},
+    {id:'enquiries', icon:'✉️', label:'Enquiries', count: myEnquiries.length},
+    {id:'profile', icon:'⚙️', label:'Profile'},
+  ];
+  return `<div class="glass" style="padding:14px;">
+    ${tabs.map(t=>`<div class="sidebar-link ${state.teacherTab===t.id?'active':''}" style="justify-content:space-between;" data-action="teacher-tab" data-tab="${t.id}">
+      <span>${t.icon} ${t.label}</span>
+      ${t.count ? `<span class="badge badge-blue" style="padding:2px 8px;">${t.count}</span>` : ''}
+    </div>`).join('')}
+    <hr class="divider-dashed" style="margin:10px 0;">
+    <div class="sidebar-link" data-action="logout">🚪 Log out</div>
+  </div>`;
+}
+
+function teacherOverview(){
+  const pending = myStudents.filter(s=>s.feeStatus!=='paid').length;
+  return `
+  <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:20px;" class="grid-2">
+    <div class="glass stat-card"><div class="eyebrow">Total students</div><div class="stat-num">${myStudents.length}</div></div>
+    <div class="glass stat-card"><div class="eyebrow">Pending payments</div><div class="stat-num" style="color:var(--amber)">${pending}</div></div>
+    <div class="glass stat-card" style="cursor:pointer;" data-action="teacher-tab" data-tab="enquiries"><div class="eyebrow">Enquiries</div><div class="stat-num" style="color:var(--blue)">${myEnquiries.length}</div></div>
+    <div class="glass stat-card"><div class="eyebrow">Rating</div><div class="stat-num">${state.selectedTeacherProfile?.rating ?? '—'}</div></div>
+  </div>
+  <div class="glass" style="padding:22px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+      <h3 style="font-size:15.5px;">Share your profile</h3>
+      <button class="btn btn-ghost btn-sm" data-action="copy-profile-link">🔗 Copy link</button>
+    </div>
+    <p class="muted" style="font-size:13px;">Send parents a direct link to your profile so they can find and enroll with you.</p>
+  </div>`;
+}
+
+function teacherStudents(){
+  return `
+  <div class="glass" style="padding:22px;">
+    <h3 style="font-size:15.5px; margin-bottom:16px;">My students</h3>
+    ${myStudents.length ? `<table class="data-table">
+      <thead><tr><th>Name</th><th>Grade</th><th>Subject</th><th>Fee status</th><th>Fee</th></tr></thead>
+      <tbody>
+        ${myStudents.map(s=>`
+        <tr>
+          <td style="font-weight:600;">${s.name}</td>
+          <td class="muted">${s.grade}</td>
+          <td class="muted">${s.subject}</td>
+          <td><span class="badge ${s.feeStatus==='paid'?'badge-green':s.feeStatus==='due'?'badge-amber':'badge-red'}">${s.feeStatus.toUpperCase()}</span></td>
+          <td class="muted">₹${s.fee}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>` : `<p class="muted" style="font-size:13.5px;">No students enrolled yet. Share your profile link so parents can find you.</p>`}
+  </div>`;
+}
+
+function teacherEnquiries(){
+  return `
+  <div class="glass" style="padding:22px;">
+    <h3 style="font-size:15.5px; margin-bottom:16px;">Enquiries from parents</h3>
+    ${myEnquiries.length ? `<div style="display:flex; flex-direction:column; gap:12px;">
+      ${myEnquiries.map(q=>`
+      <div class="glass" style="padding:16px;">
+        <div style="display:flex; justify-content:space-between; align-items:baseline; gap:12px;">
+          <div style="font-weight:700; font-size:14.5px;">${q.name}</div>
+          <div class="muted" style="font-size:12px; font-family:var(--mono); white-space:nowrap;">${new Date(q.createdAt).toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'})}</div>
+        </div>
+        <p style="margin-top:8px; font-size:13.5px; line-height:1.6;" class="muted">${q.message}</p>
+      </div>`).join('')}
+    </div>` : `<p class="muted" style="font-size:13.5px;">No enquiries yet. Share your profile link so parents can reach out.</p>`}
+  </div>`;
+}
+
+function teacherProfileEdit(){
+  const t = state.selectedTeacherProfile || {};
+  return `
+  <div class="glass" style="padding:26px; max-width:560px;">
+    <h3 style="font-size:15.5px; margin-bottom:18px;">Edit my profile</h3>
+    <div class="field"><label class="field-label">Category</label>
+      <select class="input" id="peCategory">
+        ${CATS.map(c=>`<option value="${c.id}" ${t.category===c.id?'selected':''}>${c.icon} ${c.label}</option>`).join('')}
+      </select>
+    </div>
+    <div class="field"><label class="field-label">Subjects (comma separated)</label><input class="input" id="peSubjects" value="${(t.subjects||[]).join(', ')}" placeholder="Mathematics, Physics"/></div>
+    <div class="field"><label class="field-label">Location</label><input class="input" id="peLocation" value="${t.location||''}" placeholder="Sector 45, Gurugram"/></div>
+    <div class="field"><label class="field-label">Google Maps link (optional)</label><input class="input" id="peMapsLink" value="${t.maps_link||''}" placeholder="https://maps.app.goo.gl/..."/>
+      <p class="muted" style="font-size:12px; margin-top:6px;">Open Google Maps, find your place, tap Share, and paste the link here. Students will see it as a button on your profile.</p>
+    </div>
+    <div class="field">
+      <label class="field-label">Teaching location (for automatic distance)</label>
+      <input type="hidden" id="peLat" value="${t.lat ?? ''}"/>
+      <input type="hidden" id="peLng" value="${t.lng ?? ''}"/>
+      <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+        <button type="button" class="btn btn-ghost btn-sm" data-action="teacher-set-location" ${state.locatingMe?'disabled':''}>${state.locatingMe?'Locating…':'📍 Use my current location'}</button>
+        <span class="muted" style="font-size:12.5px;" id="peLocStatus">${(t.lat!=null && t.lng!=null) ? 'Location set — students will see their distance to you' : 'Not set yet — students won\'t see a distance until you set this'}</span>
+      </div>
+    </div>
+    <div class="field"><label class="field-label">Experience</label><input class="input" id="peExperience" value="${t.experience||''}" placeholder="8 yrs"/></div>
+    <div class="field"><label class="field-label">Monthly fee (₹)</label><input class="input" id="peFee" type="number" value="${t.fee_start||0}"/></div>
+    <div class="field"><label class="field-label">Bio</label><textarea class="input" id="peBio" rows="3" placeholder="Tell parents about your teaching style...">${t.bio||''}</textarea></div>
+    <div class="field">
+      <label class="field-label">Weekly schedule — one slot per line, as <code>Day | Time | Subject</code></label>
+      <textarea class="input" id="peSchedule" rows="3" placeholder="Mon | 4:00–5:00 PM | Mathematics
+Wed | 4:00–5:00 PM | Mathematics">${(t.schedule_slots||[]).map(s=>`${s.day} | ${s.time} | ${s.subj}`).join('\n')}</textarea>
+    </div>
+    <button class="btn btn-primary" data-action="save-profile">Save changes</button>
+  </div>`;
+}
+
+// One-time panel shown immediately after a teacher signs up. It asks for
+// the exact same details as the "Profile" tab in the dashboard (same field
+// IDs, so it can reuse the dashboard's save/location logic), but is its
+// own view — the Profile tab itself is untouched, and teachers can always
+// come back and edit these same details there later.
+function teacherOnboardingFields(){
+  const t = state.selectedTeacherProfile || {};
+  return `
+    <div class="field"><label class="field-label">Category</label>
+      <select class="input" id="peCategory">
+        ${CATS.map(c=>`<option value="${c.id}" ${t.category===c.id?'selected':''}>${c.icon} ${c.label}</option>`).join('')}
+      </select>
+    </div>
+    <div class="field"><label class="field-label">Subjects (comma separated)</label><input class="input" id="peSubjects" value="${(t.subjects||[]).join(', ')}" placeholder="Mathematics, Physics"/></div>
+    <div class="field"><label class="field-label">Location</label><input class="input" id="peLocation" value="${t.location||''}" placeholder="Sector 45, Gurugram"/></div>
+    <div class="field"><label class="field-label">Google Maps link (optional)</label><input class="input" id="peMapsLink" value="${t.maps_link||''}" placeholder="https://maps.app.goo.gl/..."/>
+      <p class="muted" style="font-size:12px; margin-top:6px;">Open Google Maps, find your place, tap Share, and paste the link here. Students will see it as a button on your profile.</p>
+    </div>
+    <div class="field">
+      <label class="field-label">Teaching location (for automatic distance)</label>
+      <input type="hidden" id="peLat" value="${t.lat ?? ''}"/>
+      <input type="hidden" id="peLng" value="${t.lng ?? ''}"/>
+      <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+        <button type="button" class="btn btn-ghost btn-sm" data-action="teacher-set-location" ${state.locatingMe?'disabled':''}>${state.locatingMe?'Locating…':'📍 Use my current location'}</button>
+        <span class="muted" style="font-size:12.5px;" id="peLocStatus">${(t.lat!=null && t.lng!=null) ? 'Location set — students will see their distance to you' : 'Not set yet — students won\'t see a distance until you set this'}</span>
+      </div>
+    </div>
+    <div class="field"><label class="field-label">Experience</label><input class="input" id="peExperience" value="${t.experience||''}" placeholder="8 yrs"/></div>
+    <div class="field"><label class="field-label">Monthly fee (₹)</label><input class="input" id="peFee" type="number" value="${t.fee_start||0}"/></div>
+    <div class="field"><label class="field-label">Bio</label><textarea class="input" id="peBio" rows="3" placeholder="Tell parents about your teaching style...">${t.bio||''}</textarea></div>
+    <div class="field">
+      <label class="field-label">Weekly schedule — one slot per line, as <code>Day | Time | Subject</code></label>
+      <textarea class="input" id="peSchedule" rows="3" placeholder="Mon | 4:00–5:00 PM | Mathematics
+Wed | 4:00–5:00 PM | Mathematics">${(t.schedule_slots||[]).map(s=>`${s.day} | ${s.time} | ${s.subj}`).join('\n')}</textarea>
+    </div>`;
+}
+
+function viewTeacherOnboarding(){
+  if(!state.session || state.profile?.role!=='teacher') return viewTeacherAuth();
+  return `
+  ${navbar()}
+  <div class="wrap view-transition" style="padding-top:32px; padding-bottom:60px;">
+    <div class="glass" style="padding:30px; max-width:560px; margin:0 auto;">
+      <div class="eyebrow">Step 2 of 2</div>
+      <h1 style="font-size:24px; margin:6px 0 6px;">Set up your teacher profile</h1>
+      <p class="muted" style="font-size:13.5px; margin-bottom:22px;">This is what parents and students will see. You can always come back and change it later from your dashboard.</p>
+      ${teacherOnboardingFields()}
+      <div style="display:flex; align-items:center; gap:16px; margin-top:8px; flex-wrap:wrap;">
+        <button class="btn btn-primary" data-action="save-profile-onboarding">Save &amp; continue to dashboard</button>
+        <a href="#" style="color:var(--muted); font-size:13px;" data-action="skip-onboarding">Skip for now →</a>
+      </div>
+    </div>
+  </div>`;
+}
+
+function viewTeacherDashboard(){
+  if(!state.session || state.profile?.role!=='teacher') return viewTeacherAuth();
+  if(teacherDataStatus!=='ready'){
+    return `${navbar()}${teacherDataStatus==='error' ? errorScreen('dashboard') : loadingScreen('your dashboard')}`;
+  }
+  const tabMap = {overview:teacherOverview, students:teacherStudents, enquiries:teacherEnquiries, profile:teacherProfileEdit};
+  return `
+  ${navbar()}
+  <div class="wrap view-transition" style="padding-top:32px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:22px;">
+      <div>
+        <div class="eyebrow">Teacher dashboard</div>
+        <h1 style="font-size:26px; margin-top:4px;">Welcome back, ${state.profile.full_name || 'there'} 👋</h1>
+      </div>
+    </div>
+    <div class="dash-layout">
+      <div>${teacherSidebar()}</div>
+      <div>${tabMap[state.teacherTab]()}</div>
+    </div>
+  </div>`;
+}
+
+function viewAdminAuth(){
+  return `
+  ${navbar()}
+  <div class="wrap view-transition" style="padding-top:80px; max-width:420px; margin:0 auto;">
+    <div class="glass" style="padding:32px;">
+      <h2 style="font-size:22px; margin-bottom:6px;">🔒 Admin login</h2>
+      <p class="muted" style="font-size:13px; margin-bottom:22px;">Restricted — for site administrators only.</p>
+      <div class="field"><label class="field-label">Username</label><input class="input" id="adUsername" placeholder="admin"/></div>
+      <div class="field"><label class="field-label">Password</label><input class="input" id="adPassword" type="password" placeholder="••••••••"/></div>
+      <button class="btn btn-primary btn-block" data-action="login-admin">Log in</button>
+      <p class="muted" style="text-align:center; font-size:13px; margin-top:16px;"><a style="color:var(--text-dim); cursor:pointer;" data-action="go-home">← Back to site</a></p>
+    </div>
+  </div>`;
+}
+
+function viewAdminDashboard(){
+  if(!state.session || state.profile?.role!=='admin') return viewAdminAuth();
+  if(adminDataStatus!=='ready'){
+    return `${navbar()}${adminDataStatus==='error' ? errorScreen('admin data') : loadingScreen('the admin panel')}`;
+  }
+  const rows = state.adminTab==='teachers' ? ADMIN_TEACHERS : ADMIN_STUDENTS;
+  return `
+  ${navbar()}
+  <div class="wrap view-transition" style="padding-top:32px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:22px;">
+      <div>
+        <div class="eyebrow">Admin panel</div>
+        <h1 style="font-size:26px; margin-top:4px;">All profiles</h1>
+      </div>
+      <div style="display:flex; gap:8px;">
+        <button class="btn btn-ghost btn-sm" data-action="admin-change-password">🔑 Change password</button>
+        <button class="btn btn-ghost btn-sm" data-action="logout">🚪 Log out</button>
+      </div>
+    </div>
+    <div style="display:flex; gap:10px; margin-bottom:18px;">
+      <div class="pill ${state.adminTab==='teachers'?'active':''}" data-action="admin-tab" data-tab="teachers">🍎 Teachers (${ADMIN_TEACHERS.length})</div>
+      <div class="pill ${state.adminTab==='students'?'active':''}" data-action="admin-tab" data-tab="students">👪 Students (${ADMIN_STUDENTS.length})</div>
+    </div>
+    <div class="glass" style="padding:22px;">
+      ${rows.length ? `<table class="data-table">
+        <thead><tr><th>Name</th>${state.adminTab==='teachers' ? '<th>Category</th><th>Subjects</th><th>Rating</th>' : ''}<th>Joined</th><th></th></tr></thead>
+        <tbody>
+          ${rows.map(p=>`
+          <tr>
+            <td style="font-weight:600;">${p.full_name || 'Unnamed'}</td>
+            ${state.adminTab==='teachers' ? `
+            <td class="muted">${p.listing?.category || '—'}</td>
+            <td class="muted">${(p.listing?.subjects||[]).join(', ') || '—'}</td>
+            <td class="muted">${p.listing?.reviews ? `${p.listing.rating}★ (${p.listing.reviews})` : 'New'}</td>` : ''}
+            <td class="muted">${new Date(p.created_at).toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'})}</td>
+            <td><button class="btn btn-ghost btn-sm" style="color:var(--red);" data-action="admin-delete-profile" data-id="${p.id}" data-name="${(p.full_name||'this user').replace(/"/g,'&quot;')}" data-role="${p.role}">🗑️ Remove</button></td>
+          </tr>`).join('')}
+        </tbody>
+      </table>` : `<p class="muted" style="font-size:13.5px;">No ${state.adminTab} yet.</p>`}
+    </div>
+  </div>`;
+}
+
+
+let modalHTML = '';
+function openModal(html){ modalHTML = html; renderModal(); }
+function closeModal(){ modalHTML=''; renderModal(); }
+function renderModal(){
+  let root = document.getElementById('modalRoot');
+  if(!root){ root = document.createElement('div'); root.id='modalRoot'; document.body.appendChild(root); }
+  root.innerHTML = modalHTML ? `<div class="modal-backdrop" data-action="close-modal">${modalHTML}</div>` : '';
+}
+
+function locationPromptModal(){
+  return `<div class="glass modal" style="text-align:center;">
+    <div style="font-size:34px;">📍</div>
+    <h3 style="font-size:18px; margin-top:10px;">Find teachers near you</h3>
+    <p class="muted" style="font-size:13.5px; margin-top:6px; line-height:1.5;">
+      Share your location and every teacher card will show exactly how far
+      they are from you, in km. You can change this anytime.
+    </p>
+    <div style="display:flex; gap:10px; margin-top:20px;">
+      <button class="btn btn-ghost btn-block" data-action="onboarding-location-skip">Not now</button>
+      <button class="btn btn-primary btn-block" data-action="onboarding-location-allow">Share my location</button>
+    </div>
+  </div>`;
+}
+
+function enquiryModal(id){
+  const t = TEACHERS.find(x=>x.id===id);
+  return `<div class="glass modal">
+    <h3 style="font-size:18px; margin-bottom:4px;">Enquire with ${t.name}</h3>
+    <p class="muted" style="font-size:13px; margin-bottom:18px;">They'll see this in their dashboard.</p>
+    <div class="field"><label class="field-label">Message</label><textarea class="input" id="enquiryMsg" rows="3">Hi ${t.name}, I'd like to know more about your ${t.subjects[0]||'classes'}.</textarea></div>
+    <div style="display:flex; gap:10px; margin-top:6px;">
+      <button class="btn btn-ghost btn-block" data-action="close-modal">Cancel</button>
+      <button class="btn btn-primary btn-block" data-action="send-enquiry" data-id="${t.id}" data-name="${t.name}">Send enquiry</button>
+    </div>
+  </div>`;
+}
+
+function reviewModal(enrollmentId){
+  const e = myEnrollments.find(x=>x.id===enrollmentId);
+  const existing = myReviews.find(r=>r.enrollment_id===enrollmentId);
+  const current = existing?.rating || 5;
+  return `<div class="glass modal">
+    <h3 style="font-size:18px; margin-bottom:4px;">Rate ${e.teacherName}</h3>
+    <p class="muted" style="font-size:13px; margin-bottom:18px;">For ${e.subject}. This helps other parents choose a teacher.</p>
+    <div class="field">
+      <label class="field-label">Rating</label>
+      <div id="reviewStars" style="display:flex; gap:6px; font-size:28px;">
+        ${[1,2,3,4,5].map(n=>`<span data-star="${n}" style="cursor:pointer; color:${n<=current?'var(--amber)':'var(--text-dimmer)'};" onclick="document.querySelectorAll('#reviewStars span').forEach((s,i)=>s.style.color = i<${n} ? 'var(--amber)':'var(--text-dimmer)'); document.getElementById('reviewRating').value=${n};">★</span>`).join('')}
+      </div>
+      <input type="hidden" id="reviewRating" value="${current}"/>
+    </div>
+    <div class="field"><label class="field-label">Comment (optional)</label><textarea class="input" id="reviewComment" rows="3" placeholder="How was the class?">${existing?.comment || ''}</textarea></div>
+    <div style="display:flex; gap:10px; margin-top:6px;">
+      <button class="btn btn-ghost btn-block" data-action="close-modal">Cancel</button>
+      <button class="btn btn-primary btn-block" data-action="submit-review" data-enrollment="${enrollmentId}" data-teacher="${e.teacherId}">Submit</button>
+    </div>
+  </div>`;
+}
+
+function payModal(){
+  const totalDue = myEnrollments.filter(e=>e.status!=='paid').reduce((s,e)=>s+e.fee,0);
+  return `<div class="glass modal">
+    <h3 style="font-size:18px; margin-bottom:4px;">Mark fees as paid</h3>
+    <p class="muted" style="font-size:13px; margin-bottom:18px;">Total due across all enrollments. (This records the payment — it does not move real money.)</p>
+    <div style="text-align:center; padding:20px 0;">
+      <div style="font-family:var(--mono); font-size:36px; font-weight:700;">₹${totalDue}</div>
+    </div>
+    <div class="field">
+      <label class="field-label">Payment method</label>
+      <select class="input" id="payMethod">
+        <option>UPI</option><option>Card</option><option>Netbanking</option><option>Cash</option>
+      </select>
+    </div>
+    <button class="btn btn-primary btn-block" style="margin-top:10px;" data-action="confirm-pay">Confirm ₹${totalDue} as paid</button>
+  </div>`;
+}
+
+// Forgot-password flow: step 1 collects the email and asks Supabase to
+// email a 6-digit code; step 2 collects that code plus a new password.
+// fpEmail is remembered between the two steps (and for "Resend code")
+// without needing to touch the main app state.
+let fpEmail = '';
+// Lets the already-logged-in admin change their own password from the
+// admin panel, without needing README "Part 7" or a Supabase dashboard
+// visit. Asks for the current password first (re-checked against Supabase
+// via signInWithPassword) so someone who walks up to an already-open
+// browser tab can't silently take over the account.
+function adminChangePasswordModal(){
+  return `<div class="glass modal">
+    <h3 style="font-size:18px; margin-bottom:4px;">Change admin password</h3>
+    <p class="muted" style="font-size:13px; margin-bottom:18px;">This updates the real password Supabase checks for the admin account.</p>
+    <div class="field"><label class="field-label">Current password</label><input class="input" id="acpCurrent" type="password" placeholder="••••••••"/></div>
+    <div class="field"><label class="field-label">New password</label><input class="input" id="acpNew" type="password" placeholder="••••••••"/></div>
+    <div class="field"><label class="field-label">Confirm new password</label><input class="input" id="acpConfirm" type="password" placeholder="••••••••"/></div>
+    <div style="display:flex; gap:10px; margin-top:6px;">
+      <button class="btn btn-ghost btn-block" data-action="close-modal">Cancel</button>
+      <button class="btn btn-primary btn-block" data-action="admin-change-password-confirm">Update password</button>
+    </div>
+  </div>`;
+}
+
+async function changeAdminPassword(currentPassword, newPassword, confirmPassword){
+  if(!currentPassword || !newPassword || !confirmPassword) return toast('Please fill in all fields', 'warn');
+  if(newPassword.length < 6) return toast('Password must be at least 6 characters', 'warn');
+  if(newPassword !== confirmPassword) return toast("New passwords don't match", 'warn');
+  // Re-verify the current password before changing anything — this call
+  // itself doesn't disturb the existing admin session on success (Supabase
+  // just re-confirms the same account), and fails cleanly if it's wrong.
+  const { error: verifyError } = await sb.auth.signInWithPassword({ email: ADMIN_EMAIL, password: currentPassword });
+  if(verifyError) return toast('❌ Current password is incorrect', 'err');
+  const { error: updateError } = await sb.auth.updateUser({ password: newPassword });
+  if(updateError) return toast('❌ ' + updateError.message, 'err');
+  closeModal();
+  toast('✅ Admin password updated', 'ok');
+}
+
+function forgotPasswordModal(step){
+  if(step==='not-found'){
+    return `<div class="glass modal">
+      <h3 style="font-size:18px; margin-bottom:4px;">No account found</h3>
+      <p class="muted" style="font-size:13px; margin-bottom:18px;">There's no account registered with <strong>${fpEmail}</strong>.</p>
+      <button class="btn btn-primary btn-block" data-action="forgot-password-signup">Create an account</button>
+      <p class="muted" style="text-align:center; font-size:12.5px; margin-top:14px;">
+        <a style="color:var(--primary); font-weight:600; cursor:pointer;" data-action="forgot-password-back">Try a different email</a>
+      </p>
+    </div>`;
+  }
+  if(step==='verify'){
+    return `<div class="glass modal">
+      <h3 style="font-size:18px; margin-bottom:4px;">Enter your code</h3>
+      <p class="muted" style="font-size:13px; margin-bottom:18px;">We sent a 6-digit code to <strong>${fpEmail}</strong>. Enter it below along with your new password.</p>
+      <div class="field"><label class="field-label">6-digit code</label><input class="input" id="fpCode" placeholder="123456" inputmode="numeric" maxlength="6"/></div>
+      <div class="field"><label class="field-label">New password</label><input class="input" id="fpNewPassword" placeholder="••••••••" type="password"/></div>
+      <div class="field"><label class="field-label">Confirm new password</label><input class="input" id="fpConfirmPassword" placeholder="••••••••" type="password"/></div>
+      <button class="btn btn-primary btn-block" style="margin-top:6px;" data-action="forgot-password-confirm">Reset password</button>
+      <p class="muted" style="text-align:center; font-size:12.5px; margin-top:14px;">
+        Didn't get a code? <a style="color:var(--primary); font-weight:600; cursor:pointer;" data-action="forgot-password-resend">Resend</a>
+        &nbsp;·&nbsp;
+        <a style="color:var(--primary); font-weight:600; cursor:pointer;" data-action="forgot-password-back">Use a different email</a>
+      </p>
+    </div>`;
+  }
+  return `<div class="glass modal">
+    <h3 style="font-size:18px; margin-bottom:4px;">Reset your password</h3>
+    <p class="muted" style="font-size:13px; margin-bottom:18px;">Enter the email on your account and we'll send you a 6-digit code to reset your password.</p>
+    <div class="field"><label class="field-label">Email</label><input class="input" id="fpEmail" placeholder="you@example.com" type="email" value="${fpEmail}"/></div>
+    <div style="display:flex; gap:10px; margin-top:6px;">
+      <button class="btn btn-ghost btn-block" data-action="close-modal">Cancel</button>
+      <button class="btn btn-primary btn-block" data-action="forgot-password-send">Send code</button>
+    </div>
+  </div>`;
+}
+
+/* =========================================================
+   RENDER + EVENTS
+========================================================= */
+function loadingScreen(what){
+  return `<div class="wrap view-transition" style="padding-top:100px; text-align:center;">
+    <div class="glass" style="padding:48px; max-width:420px; margin:0 auto;">
+      <div style="font-size:28px;">⏳</div>
+      <p class="muted" style="margin-top:12px;">Loading ${what||'teachers'}…</p>
+    </div>
+  </div>`;
+}
+function errorScreen(what){
+  return `<div class="wrap view-transition" style="padding-top:100px; text-align:center;">
+    <div class="glass" style="padding:48px; max-width:460px; margin:0 auto;">
+      <div style="font-size:28px;">⚠️</div>
+      <h3 style="margin-top:12px; font-size:17px;">Couldn't load ${what||'data'}</h3>
+      <p class="muted" style="margin-top:6px; font-size:13.5px;">Check your connection and Supabase configuration, then try again.</p>
+      <button class="btn btn-primary" style="margin-top:18px;" data-action="retry-load">Try again</button>
+    </div>
+  </div>`;
+}
+
+const NEEDS_TEACHERS = new Set(['home','browse','teacherProfile']);
+
+function render(){
+  if(!isConfigured()){ document.getElementById('app').innerHTML = setupMissingScreen(); return; }
+  if(state.session && awaitingOAuthName){
+    document.getElementById('app').innerHTML = viewOAuthNamePrompt();
+    return;
+  }
+  const views = {
+    home: viewHome, browse: viewBrowse, teacherProfile: viewTeacherProfile,
+    studentAuth: viewStudentAuth, studentDashboard: viewStudentDashboard,
+    teacherHome: viewTeacherHome, teacherAuth: viewTeacherAuth, teacherDashboard: viewTeacherDashboard,
+    teacherOnboarding: viewTeacherOnboarding,
+    adminAuth: viewAdminAuth, adminDashboard: viewAdminDashboard,
+  };
+  let html;
+  if(NEEDS_TEACHERS.has(state.view) && teachersStatus !== 'ready'){
+    html = navbar() + (teachersStatus === 'error' ? errorScreen('teachers') : loadingScreen('teachers'));
+  }else if(state.view==='studentDashboard' && state.session && state.profile?.role==='student' && studentDataStatus==='idle'){
+    ensureStudentData(); // status was reset (e.g. by a background auth refresh) — refetch instead of showing a permanent loader
+    html = navbar() + loadingScreen('your dashboard');
+  }else if(state.view==='teacherDashboard' && state.session && state.profile?.role==='teacher' && teacherDataStatus==='idle'){
+    ensureTeacherData();
+    html = navbar() + loadingScreen('your dashboard');
+  }else if(state.view==='adminDashboard' && state.session && state.profile?.role==='admin' && adminDataStatus==='idle'){
+    ensureAdminData();
+    html = navbar() + loadingScreen('the admin panel');
+  }else{
+    html = views[state.view]();
+  }
+  document.getElementById('app').innerHTML = html;
+}
+
+document.addEventListener('click', (e)=>{
+  const el = e.target.closest('[data-action]');
+  if(!el) return;
+  const action = el.dataset.action;
+  switch(action){
+    case 'go-home':
+      nav(state.portal==='customer' ? 'home' : 'teacherHome'); break;
+    case 'go':
+      if(el.dataset.mode && el.dataset.view==='teacherAuth') state.teacherAuthMode = el.dataset.mode;
+      if(el.dataset.mode && el.dataset.view==='studentAuth') state.studentAuthMode = el.dataset.mode;
+      if(el.dataset.view==='studentAuth' || el.dataset.view==='teacherAuth') captureAuthRedirect();
+      nav(el.dataset.view); break;
+    case 'switch-portal':
+      state.portal = el.dataset.portal;
+      nav(state.portal==='customer' ? 'home' : (state.session && state.profile?.role==='teacher' ? 'teacherDashboard' : 'teacherHome'));
+      break;
+    case 'go-admin':
+      nav(state.session && state.profile?.role==='admin' ? 'adminDashboard' : 'adminAuth');
+      break;
+    case 'login-admin':
+      setBtnLoading(el, true);
+      signInAdmin(document.getElementById('adUsername').value, document.getElementById('adPassword').value).finally(()=>setBtnLoading(el, false));
+      break;
+    case 'forgot-password':
+      fpEmail = '';
+      openModal(forgotPasswordModal('request'));
+      break;
+    case 'forgot-password-send':
+      setBtnLoading(el, true);
+      requestPasswordReset(document.getElementById('fpEmail').value.trim()).finally(()=>setBtnLoading(el, false));
+      break;
+    case 'forgot-password-resend':
+      setBtnLoading(el, true);
+      requestPasswordReset(fpEmail).finally(()=>setBtnLoading(el, false));
+      break;
+    case 'forgot-password-back':
+      openModal(forgotPasswordModal('request'));
+      break;
+    case 'forgot-password-signup':
+      closeModal();
+      if(state.portal==='teacher'){ state.teacherAuthMode = 'signup'; nav('teacherAuth'); }
+      else{ state.studentAuthMode = 'signup'; nav('studentAuth'); }
+      break;
+    case 'forgot-password-confirm':
+      setBtnLoading(el, true);
+      confirmPasswordReset(
+        document.getElementById('fpCode').value.trim(),
+        document.getElementById('fpNewPassword').value,
+        document.getElementById('fpConfirmPassword').value
+      ).finally(()=>setBtnLoading(el, false));
+      break;
+    case 'admin-change-password':
+      openModal(adminChangePasswordModal());
+      break;
+    case 'admin-change-password-confirm':
+      setBtnLoading(el, true);
+      changeAdminPassword(
+        document.getElementById('acpCurrent').value,
+        document.getElementById('acpNew').value,
+        document.getElementById('acpConfirm').value
+      ).finally(()=>setBtnLoading(el, false));
+      break;
+    case 'admin-tab':
+      state.adminTab = el.dataset.tab;
+      render();
+      break;
+    case 'admin-delete-profile': {
+      const name = el.dataset.name, role = el.dataset.role, id = el.dataset.id;
+      if(!confirm(`Delete ${role} "${name}"? This permanently removes their login and all related data (listings, enrollments, payments, reviews). This cannot be undone.`)) return;
+      setBtnLoading(el, true);
+      // Calls the admin-delete-user Edge Function, which deletes the
+      // Supabase Auth account itself (not just the profiles row). That
+      // auth deletion cascades down to profiles and everything tied to
+      // it, so the user is fully gone, not just logged-out-and-orphaned.
+      sb.functions.invoke('admin-delete-user', { body: { id } }).then(({data, error})=>{
+        if(error){ toast('❌ ' + error.message, 'err'); return; }
+        if(data?.error){ toast('❌ ' + data.error, 'err'); return; }
+        toast('🗑️ Removed ' + name, 'ok');
+        adminDataStatus = 'idle';
+        ensureAdminData();
+        teachersStatus = 'idle'; // the removed teacher may be cached in the public listing too
+      }).finally(()=>setBtnLoading(el, false));
+      break;
+    }
+    case 'register-as-teacher':
+      state.portal = 'teacher';
+      if(state.session && state.profile?.role==='teacher'){
+        nav('teacherDashboard');
+      }else{
+        state.teacherAuthMode = 'signup';
+        nav('teacherAuth');
+      }
+      break;
+    case 'filter-cat':
+      state.filters.category = el.dataset.cat;
+      nav('browse');
+      break;
+    case 'set-filter-cat':
+      state.filters.category = el.dataset.cat;
+      render();
+      break;
+    case 'toggle-sort-distance':
+      state.filters.sortDistance = !state.filters.sortDistance;
+      render();
+      break;
+    case 'search-from-hero':
+      state.filters.query = document.getElementById('heroSearch').value;
+      nav('browse');
+      break;
+    case 'view-teacher':
+      nav('teacherProfile', {selectedTeacherId: el.dataset.id, selectedTeacherFrom: state.view==='browse' ? 'browse' : 'home'});
+      break;
+    case 'open-enquiry':
+      if(!state.session || state.profile?.role!=='student'){
+        captureAuthRedirect({ reopenEnquiryFor: el.dataset.id });
+        toast('Please log in as a parent/student first', 'warn');
+        nav('studentAuth');
+        return;
+      }
+      openModal(enquiryModal(el.dataset.id));
+      break;
+    case 'close-modal':
+      // el is whichever ancestor carries data-action="close-modal" — that's
+      // only ever the backdrop itself (buttons inside the modal have their
+      // own data-action). Only close if the click landed on that element
+      // directly, so clicking inside the modal box doesn't dismiss it.
+      if(e.target === el) closeModal();
+      break;
+    case 'send-enquiry': {
+      const msg = document.getElementById('enquiryMsg').value;
+      setBtnLoading(el, true);
+      sb.from('enquiries').insert({ teacher_id: el.dataset.id, student_id: state.session.user.id, message: msg })
+        .then(({error})=>{
+          if(error){ toast('❌ ' + error.message, 'err'); return; }
+          closeModal();
+          toast('✅ Enquiry sent to ' + el.dataset.name + '!', 'ok');
+        }).finally(()=>setBtnLoading(el, false));
+      break;
+    }
+    case 'enroll-now': {
+      const t = TEACHERS.find(x=>x.id===el.dataset.id);
+      if(!state.session || state.profile?.role!=='student'){
+        // Remember where they were trying to enroll so we can send them
+        // straight back here once they've logged in.
+        captureAuthRedirect();
+        toast('Please log in as a parent/student first', 'warn');
+        nav('studentAuth');
+        return;
+      }
+      setBtnLoading(el, true);
+      sb.from('enrollments').insert({
+        student_id: state.session.user.id, teacher_id: t.id, subject: t.subjects[0]||'General',
+        schedule: (t.schedule[0] ? `${t.schedule[0].day} ${t.schedule[0].time}` : ''), fee: t.feeStart, status:'due',
+      }).then(({error})=>{
+        if(error){ toast('❌ ' + error.message, 'err'); return; }
+        toast('✅ Enrolled with ' + t.name + '!', 'ok');
+        studentDataStatus = 'idle';
+        nav('studentDashboard');
+      }).finally(()=>setBtnLoading(el, false));
+      break;
+    }
+    case 'student-auth-mode':
+      state.studentAuthMode = el.dataset.mode; render(); break;
+    case 'teacher-auth-mode':
+      state.teacherAuthMode = el.dataset.mode; render(); break;
+    case 'oauth-name-confirm':
+      setBtnLoading(el, true);
+      completeOAuthSignup(document.getElementById('oauthName').value).finally(()=>setBtnLoading(el, false));
+      break;
+    case 'google-signin-student':
+      setBtnLoading(el, true);
+      captureAuthRedirect();
+      signInWithGoogle('student').finally(()=>setBtnLoading(el, false));
+      break;
+    case 'google-signin-teacher':
+      setBtnLoading(el, true);
+      captureAuthRedirect();
+      signInWithGoogle('teacher').finally(()=>setBtnLoading(el, false));
+      break;
+    case 'login-student':
+      setBtnLoading(el, true);
+      signInStudent(document.getElementById('suEmail').value, document.getElementById('suPassword').value).finally(()=>setBtnLoading(el, false));
+      break;
+    case 'signup-student':
+      setBtnLoading(el, true);
+      signUpStudent(document.getElementById('suName').value, document.getElementById('suEmail').value, document.getElementById('suPassword').value).finally(()=>setBtnLoading(el, false));
+      break;
+    case 'login-teacher':
+      setBtnLoading(el, true);
+      signInTeacher(document.getElementById('tuEmail').value, document.getElementById('tuPassword').value).finally(()=>setBtnLoading(el, false));
+      break;
+    case 'signup-teacher':
+      setBtnLoading(el, true);
+      signUpTeacher(document.getElementById('tuName').value, document.getElementById('tuEmail').value, document.getElementById('tuPassword').value).finally(()=>setBtnLoading(el, false));
+      break;
+    case 'logout':
+      setBtnLoading(el, true);
+      logout().finally(()=>setBtnLoading(el, false));
+      break;
+    case 'toggle-theme':
+      toggleTheme(el);
+      break;
+    case 'teacher-tab':
+      state.teacherTab = el.dataset.tab;
+      if(el.dataset.tab==='profile') loadOwnTeacherProfile();
+      else render();
+      break;
+    case 'copy-profile-link': {
+      const link = location.origin + location.pathname + '?teacher=' + state.session.user.id;
+      navigator.clipboard.writeText(link).then(()=>toast('🔗 Link copied to clipboard', 'ok'));
+      break;
+    }
+    case 'save-profile':
+      setBtnLoading(el, true);
+      saveTeacherProfile().finally(()=>setBtnLoading(el, false));
+      break;
+    case 'save-profile-onboarding':
+      setBtnLoading(el, true);
+      saveTeacherProfileOnboarding().finally(()=>setBtnLoading(el, false));
+      break;
+    case 'skip-onboarding':
+      nav('teacherDashboard');
+      break;
+    case 'use-my-location':
+      useMyLocation();
+      break;
+    case 'onboarding-location-allow':
+      useMyLocationOnboarding();
+      break;
+    case 'onboarding-location-skip':
+      try{ localStorage.setItem('npt-location-declined', '1'); }catch(e){}
+      closeModal();
+      break;
+    case 'teacher-set-location': {
+      // Updates the DOM directly rather than calling render() — a full
+      // re-render would regenerate this form from state.selectedTeacherProfile
+      // and discard any other unsaved field edits the teacher has typed.
+      if(!navigator.geolocation){ toast('Location isn\'t supported in this browser', 'warn'); break; }
+      const btn = el;
+      const originalLabel = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Locating…';
+      navigator.geolocation.getCurrentPosition(
+        (pos)=>{
+          const latEl = document.getElementById('peLat');
+          const lngEl = document.getElementById('peLng');
+          const statusEl = document.getElementById('peLocStatus');
+          if(latEl && lngEl){
+            latEl.value = pos.coords.latitude;
+            lngEl.value = pos.coords.longitude;
+          }
+          if(statusEl) statusEl.textContent = 'Location set — students will see their distance to you';
+          btn.disabled = false;
+          btn.textContent = originalLabel;
+          toast('📍 Teaching location captured — remember to save changes', 'ok');
+        },
+        ()=>{
+          btn.disabled = false;
+          btn.textContent = originalLabel;
+          toast('❌ Couldn\'t get your location — check permissions and try again', 'err');
+        },
+        { enableHighAccuracy:false, timeout:10000 }
+      );
+      break;
+    }
+    case 'open-review':
+      openModal(reviewModal(parseInt(el.dataset.id)));
+      break;
+    case 'submit-review': {
+      const enrollmentId = parseInt(el.dataset.enrollment);
+      const teacherId = el.dataset.teacher;
+      const rating = parseInt(document.getElementById('reviewRating').value);
+      const comment = document.getElementById('reviewComment').value.trim();
+      setBtnLoading(el, true);
+      sb.from('reviews').upsert({
+        teacher_id: teacherId, student_id: state.session.user.id, enrollment_id: enrollmentId,
+        rating, comment,
+      }, { onConflict: 'enrollment_id' }).then(({error})=>{
+        if(error){ toast('❌ ' + error.message, 'err'); return; }
+        closeModal();
+        toast('✅ Thanks for the review!', 'ok');
+        studentDataStatus = 'idle';
+        ensureStudentData(true);
+        ensureTeachers(true); // refresh the teacher's averaged rating everywhere it's shown
+      }).finally(()=>setBtnLoading(el, false));
+      break;
+    }
+    case 'open-pay':
+      openModal(payModal());
+      break;
+    case 'confirm-pay':
+      setBtnLoading(el, true);
+      confirmPay(document.getElementById('payMethod').value).finally(()=>setBtnLoading(el, false));
+      break;
+    case 'retry-load': {
+      setBtnLoading(el, true);
+      const reloads = [ensureTeachers(true)];
+      if(state.view==='studentDashboard') reloads.push(ensureStudentData(true));
+      if(state.view==='teacherDashboard') reloads.push(ensureTeacherData(true));
+      if(state.view==='adminDashboard') reloads.push(ensureAdminData(true));
+      Promise.all(reloads).finally(()=>setBtnLoading(el, false));
+      break;
+    }
+  }
+});
+
+async function loadOwnTeacherProfile(){
+  const { data, error } = await sb.from('teacher_profiles').select('*, schedule_slots(day,time,subj)').eq('profile_id', state.session.user.id).single();
+  if(error){ toast('❌ ' + error.message, 'err'); return; }
+  state.selectedTeacherProfile = data;
+  render();
+}
+
+async function saveTeacherProfile(){
+  const uid = state.session.user.id;
+  const payload = {
+    category: document.getElementById('peCategory').value,
+    subjects: document.getElementById('peSubjects').value.split(',').map(s=>s.trim()).filter(Boolean),
+    location: document.getElementById('peLocation').value,
+    maps_link: document.getElementById('peMapsLink').value.trim(),
+    lat: document.getElementById('peLat').value ? parseFloat(document.getElementById('peLat').value) : null,
+    lng: document.getElementById('peLng').value ? parseFloat(document.getElementById('peLng').value) : null,
+    experience: document.getElementById('peExperience').value,
+    fee_start: parseInt(document.getElementById('peFee').value) || 0,
+    bio: document.getElementById('peBio').value,
+  };
+  const { error } = await sb.from('teacher_profiles').update(payload).eq('profile_id', uid);
+  if(error){ toast('❌ ' + error.message, 'err'); return; }
+
+  const scheduleLines = document.getElementById('peSchedule').value.split('\n').map(l=>l.trim()).filter(Boolean);
+  const slots = scheduleLines.map(l=>{
+    const [day,time,subj] = l.split('|').map(s=>s.trim());
+    return { teacher_id: uid, day, time, subj };
+  }).filter(s=>s.day && s.time && s.subj);
+  await sb.from('schedule_slots').delete().eq('teacher_id', uid);
+  if(slots.length) await sb.from('schedule_slots').insert(slots);
+
+  toast('✅ Profile updated', 'ok');
+  ensureTeachers(true);
+  loadOwnTeacherProfile();
+}
+
+// Same save logic as saveTeacherProfile(), reading the same field IDs from
+// the onboarding panel — kept separate so the dashboard's Profile tab and
+// its save button are never touched, and so this can move on to the
+// dashboard afterward instead of staying on the same screen.
+async function saveTeacherProfileOnboarding(){
+  const uid = state.session.user.id;
+  const payload = {
+    category: document.getElementById('peCategory').value,
+    subjects: document.getElementById('peSubjects').value.split(',').map(s=>s.trim()).filter(Boolean),
+    location: document.getElementById('peLocation').value,
+    maps_link: document.getElementById('peMapsLink').value.trim(),
+    lat: document.getElementById('peLat').value ? parseFloat(document.getElementById('peLat').value) : null,
+    lng: document.getElementById('peLng').value ? parseFloat(document.getElementById('peLng').value) : null,
+    experience: document.getElementById('peExperience').value,
+    fee_start: parseInt(document.getElementById('peFee').value) || 0,
+    bio: document.getElementById('peBio').value,
+  };
+  const { error } = await sb.from('teacher_profiles').update(payload).eq('profile_id', uid);
+  if(error){ toast('❌ ' + error.message, 'err'); return; }
+
+  const scheduleLines = document.getElementById('peSchedule').value.split('\n').map(l=>l.trim()).filter(Boolean);
+  const slots = scheduleLines.map(l=>{
+    const [day,time,subj] = l.split('|').map(s=>s.trim());
+    return { teacher_id: uid, day, time, subj };
+  }).filter(s=>s.day && s.time && s.subj);
+  await sb.from('schedule_slots').delete().eq('teacher_id', uid);
+  if(slots.length) await sb.from('schedule_slots').insert(slots);
+
+  toast('🎉 Profile saved — welcome to your dashboard!', 'ok');
+  ensureTeachers(true);
+  nav('teacherDashboard');
+}
+
+async function confirmPay(method){
+  const due = myEnrollments.filter(e=>e.status!=='paid');
+  const total = due.reduce((s,e)=>s+e.fee,0);
+  for(const e of due){
+    await sb.from('enrollments').update({status:'paid'}).eq('id', e.id);
+    await sb.from('payments').insert({ enrollment_id:e.id, student_id: state.session.user.id, amount:e.fee, method });
+  }
+  closeModal();
+  toast('✅ Recorded ₹' + total + ' as paid.', 'ok');
+  studentDataStatus = 'idle';
+  ensureStudentData(true);
+}
+
+document.addEventListener('keydown', (e)=>{
+  if(e.key !== 'Enter') return;
+  const id = e.target.id;
+  if(id==='suName' || id==='suEmail' || id==='suPassword'){
+    e.preventDefault();
+    const btn = document.querySelector('[data-action="login-student"], [data-action="signup-student"]');
+    setBtnLoading(btn, true);
+    if(state.studentAuthMode==='login'){
+      signInStudent(document.getElementById('suEmail').value, document.getElementById('suPassword').value).finally(()=>setBtnLoading(btn, false));
+    }else{
+      signUpStudent(document.getElementById('suName').value, document.getElementById('suEmail').value, document.getElementById('suPassword').value).finally(()=>setBtnLoading(btn, false));
+    }
+  }
+  if(id==='tuName' || id==='tuEmail' || id==='tuPassword'){
+    e.preventDefault();
+    const btn = document.querySelector('[data-action="login-teacher"], [data-action="signup-teacher"]');
+    setBtnLoading(btn, true);
+    if(state.teacherAuthMode==='login'){
+      signInTeacher(document.getElementById('tuEmail').value, document.getElementById('tuPassword').value).finally(()=>setBtnLoading(btn, false));
+    }else{
+      signUpTeacher(document.getElementById('tuName').value, document.getElementById('tuEmail').value, document.getElementById('tuPassword').value).finally(()=>setBtnLoading(btn, false));
+    }
+  }
+  if(id==='adUsername' || id==='adPassword'){
+    e.preventDefault();
+    const btn = document.querySelector('[data-action="login-admin"]');
+    setBtnLoading(btn, true);
+    signInAdmin(document.getElementById('adUsername').value, document.getElementById('adPassword').value).finally(()=>setBtnLoading(btn, false));
+  }
+  if(id==='fpEmail'){
+    e.preventDefault();
+    const btn = document.querySelector('[data-action="forgot-password-send"]');
+    setBtnLoading(btn, true);
+    requestPasswordReset(document.getElementById('fpEmail').value.trim()).finally(()=>setBtnLoading(btn, false));
+  }
+  if(id==='fpCode' || id==='fpNewPassword' || id==='fpConfirmPassword'){
+    e.preventDefault();
+    const btn = document.querySelector('[data-action="forgot-password-confirm"]');
+    setBtnLoading(btn, true);
+    confirmPasswordReset(
+      document.getElementById('fpCode').value.trim(),
+      document.getElementById('fpNewPassword').value,
+      document.getElementById('fpConfirmPassword').value
+    ).finally(()=>setBtnLoading(btn, false));
+  }
+  if(id==='oauthName'){
+    e.preventDefault();
+    const btn = document.querySelector('[data-action="oauth-name-confirm"]');
+    setBtnLoading(btn, true);
+    completeOAuthSignup(document.getElementById('oauthName').value).finally(()=>setBtnLoading(btn, false));
+  }
+  if(id==='acpCurrent' || id==='acpNew' || id==='acpConfirm'){
+    e.preventDefault();
+    const btn = document.querySelector('[data-action="admin-change-password-confirm"]');
+    setBtnLoading(btn, true);
+    changeAdminPassword(
+      document.getElementById('acpCurrent').value,
+      document.getElementById('acpNew').value,
+      document.getElementById('acpConfirm').value
+    ).finally(()=>setBtnLoading(btn, false));
+  }
+});
+
+boot();
+</script>
+</body>
+</html>
