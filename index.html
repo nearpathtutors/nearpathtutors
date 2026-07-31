@@ -280,8 +280,8 @@ table.data-table tr:hover td{ background: var(--divider-soft); }
    SUPABASE CONFIG — fill these in from your Supabase project
    (Project Settings → API). See README.md for step-by-step setup.
 ========================================================= */
-const SUPABASE_URL = 'https://cloltuitbpxzjipskzhb.supabase.co/';
-const SUPABASE_ANON_KEY = 'sb_publishable_jxbHGhZSFqv6Aw1XNVQPfA_wMJr3ECi';
+const SUPABASE_URL = 'https://evbpzygzlqsbbsqnrcuf.supabase.co/';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV2YnB6eWd6bHFzYmJzcW5yY3VmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU0NzYzNzcsImV4cCI6MjEwMTA1MjM3N30.Ff6v8BHnmtJvNiAshV-iTnj-I3coBPrY9lKvpKhjewY';
 const sb = (SUPABASE_URL.startsWith('http'))
   ? supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
   : null;
