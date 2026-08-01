@@ -671,21 +671,29 @@ let authFlowInProgress = false;
 async function boot(){
   if(!isConfigured()){ render(); return; }
 
-  sb.auth.onAuthStateChange(async (_event, session)=>{
+  sb.auth.onAuthStateChange(async (event, session)=>{
     state.session = session;
     // Supabase fires this on token refresh, tab focus, etc — not just on
     // actual login/logout. Only wipe cached dashboard data when the
     // signed-in user id has genuinely changed, otherwise a dashboard
     // that's already loaded gets reset to "loading" and never refetches.
     const newUserId = session?.user?.id || null;
-    if(newUserId !== lastAuthUserId){
+    const userChanged = newUserId !== lastAuthUserId;
+    if(userChanged){
       await refreshProfile();
       studentDataStatus = 'idle'; teacherDataStatus = 'idle'; adminDataStatus = 'idle';
       resetChatWidget();
       lastAuthUserId = newUserId;
     }
     if(authFlowInProgress) return;
-    render();
+    // A TOKEN_REFRESHED event fires on basically every tab focus, with the
+    // same signed-in user and nothing actually different — repainting on
+    // every one of those wipes out in-progress form input (fields aren't
+    // bound to state) and resets the chat widget's scroll position. Only
+    // repaint when the signed-in user actually changed, or on an explicit
+    // sign-out — state.session above is still kept fresh either way, so API
+    // calls still use the refreshed token.
+    if(userChanged || event === 'SIGNED_OUT') render();
   });
 
   const { data:{ session } } = await sb.auth.getSession();
