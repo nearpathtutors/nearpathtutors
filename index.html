@@ -1884,7 +1884,34 @@ function renderChatDock(){
   if(conversationsStatus==='idle') ensureConversations(); // first render after login — kick off the initial load
   startPresence(); // no-op if already running this session
   startInboxTypingChannel(); // no-op if already running this session
-  root.innerHTML = chatDockHTML();
+
+  // Opening a thread triggers several back-to-back renders in quick
+  // succession (the initial open, messages finishing their fetch, the
+  // conversation list refresh finishing) — all still showing the same
+  // open dock. The bubble/dock elements carry a CSS "pop in" entrance
+  // animation, which used to replay every single time because
+  // root.innerHTML got wiped and rebuilt from scratch on every call —
+  // that's what made opening a thread look like it was popping open two
+  // or three times in a row. Now the outer element is only replaced (and
+  // the animation only plays) when actually switching between collapsed
+  // and open; a same-shape render just refreshes its contents in place.
+  const shape = chatWidgetOpen ? 'dock' : 'bubble';
+  let el = root.firstElementChild;
+  if(!el || el.dataset.shape !== shape){
+    root.innerHTML = '';
+    el = document.createElement(shape==='dock' ? 'div' : 'button');
+    el.dataset.shape = shape;
+    if(shape==='dock'){
+      el.className = 'glass chat-dock';
+    }else{
+      el.className = 'chat-bubble';
+      el.type = 'button';
+      el.setAttribute('aria-label', 'Open messages');
+      el.setAttribute('data-action', 'toggle-chat');
+    }
+    root.appendChild(el);
+  }
+  el.innerHTML = shape==='dock' ? (chatWidgetView==='thread' ? chatThreadHTML() : chatInboxHTML()) : chatBubbleInnerHTML();
 }
 
 function locationPromptModal(){
@@ -2529,7 +2556,7 @@ function chatMessagesHTML(){
 // input — a targeted patch (renderChatReplyBanner), not a full re-render,
 // so it doesn't disturb the message list or steal input focus.
 function startReplyTo(id){
-  const m = chatMessages.find(x=>x.id===id);
+  const m = chatMessages.find(x=>String(x.id)===String(id));
   if(!m) return;
   chatReplyTarget = { id:m.id, senderId:m.sender_id, body:m.body };
   renderChatReplyBanner();
@@ -2627,14 +2654,13 @@ function chatThreadHTML(){
   `;
 }
 
-function chatDockHTML(){
-  if(!chatWidgetOpen){
-    const unread = myConversations.filter(c=>c.unread).length;
-    return `<button class="chat-bubble" data-action="toggle-chat" aria-label="Open messages">
-      💬${unread ? `<span class="chat-bubble-badge">${unread>9?'9+':unread}</span>` : ''}
-    </button>`;
-  }
-  return `<div class="glass chat-dock">${chatWidgetView==='thread' ? chatThreadHTML() : chatInboxHTML()}</div>`;
+// Inner content only (no outer wrapper) — used by renderChatDock, which
+// owns creating/reusing the outer bubble-button or dock-div itself. Kept
+// separate so a routine content refresh doesn't need to recreate (and
+// thus re-animate) the outer element.
+function chatBubbleInnerHTML(){
+  const unread = myConversations.filter(c=>c.unread).length;
+  return `💬${unread ? `<span class="chat-bubble-badge">${unread>9?'9+':unread}</span>` : ''}`;
 }
 
 function reviewModal(enrollmentId){
