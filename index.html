@@ -1975,15 +1975,15 @@ async function ensureConversations(force){
 
     if(role==='teacher'){
       await ensureTeacherData();
-      myStudents.forEach(s=> partners.set(s.studentId, { id:s.studentId, name:s.name, lastMessage:null, lastAt:null, lastMine:false, unread:false, lastSeenAt:null, typing:false, theirSeenAt:null }));
-      myEnquiries.forEach(q=>{ if(!partners.has(q.studentId)) partners.set(q.studentId, { id:q.studentId, name:q.name, lastMessage:null, lastAt:null, lastMine:false, unread:false, lastSeenAt:null, typing:false, theirSeenAt:null }); });
+      myStudents.forEach(s=> partners.set(s.studentId, { id:s.studentId, name:s.name, lastMessage:null, lastAt:null, lastMine:false, unread:false, lastSeenAt:null, typing:false }));
+      myEnquiries.forEach(q=>{ if(!partners.has(q.studentId)) partners.set(q.studentId, { id:q.studentId, name:q.name, lastMessage:null, lastAt:null, lastMine:false, unread:false, lastSeenAt:null, typing:false }); });
     }else{
       await ensureStudentData();
-      myEnrollments.forEach(e=> partners.set(e.teacherId, { id:e.teacherId, name:e.teacherName, lastMessage:null, lastAt:null, lastMine:false, unread:false, lastSeenAt:null, typing:false, theirSeenAt:null }));
+      myEnrollments.forEach(e=> partners.set(e.teacherId, { id:e.teacherId, name:e.teacherName, lastMessage:null, lastAt:null, lastMine:false, unread:false, lastSeenAt:null, typing:false }));
       const { data: sent, error } = await sb.from('enquiries').select('teacher_id, teacher_profiles(profiles(full_name))').eq('student_id', uid);
       if(error) throw error;
       sent.forEach(q=>{
-        if(!partners.has(q.teacher_id)) partners.set(q.teacher_id, { id:q.teacher_id, name:q.teacher_profiles?.profiles?.full_name || 'Teacher', lastMessage:null, lastAt:null, lastMine:false, unread:false, lastSeenAt:null, typing:false, theirSeenAt:null });
+        if(!partners.has(q.teacher_id)) partners.set(q.teacher_id, { id:q.teacher_id, name:q.teacher_profiles?.profiles?.full_name || 'Teacher', lastMessage:null, lastAt:null, lastMine:false, unread:false, lastSeenAt:null, typing:false });
       });
     }
 
@@ -1994,7 +1994,7 @@ async function ensureConversations(force){
       const otherId = role==='teacher' ? m.student_id : m.teacher_id;
       let p = partners.get(otherId);
       if(!p){
-        p = { id: otherId, name: null, lastMessage:null, lastAt:null, lastMine:false, unread:false, lastSeenAt:null, typing:false, theirSeenAt:null };
+        p = { id: otherId, name: null, lastMessage:null, lastAt:null, lastMine:false, unread:false, lastSeenAt:null, typing:false };
         partners.set(otherId, p);
       }
       p.lastMessage = m.body;
@@ -2069,14 +2069,14 @@ function subscribeSessionRealtime(){
           clearTimeout(chatTypingHideTimer);
           chatOtherTyping = false;
           renderChatTypingIndicator();
-          sendSeenPing(); // I'm looking at this thread right now, so this counts as seen immediately
+          markThreadRead(otherId); // I'm looking at this thread right now, so this counts as read immediately
         }
       }
 
       let p = myConversations.find(c=>c.id===otherId);
       let isNewRow = false;
       if(!p){
-        p = { id:otherId, name: null, lastMessage:null, lastAt:null, lastMine:false, unread:false, typing:false, theirSeenAt:null };
+        p = { id:otherId, name: null, lastMessage:null, lastAt:null, lastMine:false, unread:false, typing:false };
         myConversations.unshift(p);
         isNewRow = true;
         sb.from('profiles').select('full_name').eq('id', otherId).single().then(({data})=>{
@@ -2113,6 +2113,15 @@ function subscribeSessionRealtime(){
         // else: a different thread is open right now — nothing on screen
         // needs to change; the inbox will pick this up next time it's opened.
       }
+    })
+    .on('postgres_changes', { event:'UPDATE', schema:'public', table:'messages', filter:`${col}=eq.${uid}` }, (payload)=>{
+      const m = payload.new;
+      if(m.sender_id !== uid || !m.read_at) return; // only care about my own messages just having been marked read
+      const idx = chatMessages.findIndex(x=>x.id===m.id);
+      if(idx!==-1) chatMessages[idx] = { ...chatMessages[idx], read_at: m.read_at };
+      const otherId = role==='teacher' ? m.student_id : m.teacher_id;
+      const openOtherId = role==='teacher' ? chatStudentId : chatTeacherId;
+      if(chatWidgetOpen && chatWidgetView==='thread' && otherId===openOtherId) renderChatMessagesList();
     })
     .subscribe();
 }
@@ -2243,16 +2252,15 @@ function playPingSound(){
 }
 
 // Persistent, session-wide channel (named after my own id) that receives
-// "typing" and "seen" pings addressed to me from anyone — not just while
-// I have their specific thread open — so the inbox list can show
-// "typing…" against the right conversation even while I'm just browsing
-// the inbox (or elsewhere on the site).
+// "typing" pings addressed to me from anyone — not just while I have their
+// specific thread open — so the inbox list can show "typing…" against the
+// right conversation even while I'm just browsing the inbox (or elsewhere
+// on the site).
 function startInboxTypingChannel(){
   if(inboxTypingChannel || !state.session) return;
   const uid = state.session.user.id;
   inboxTypingChannel = sb.channel(`inbox-typing-${uid}`)
     .on('broadcast', {event:'typing'}, (payload)=>{ if(payload.payload?.from) markTyping(payload.payload.from); })
-    .on('broadcast', {event:'seen'}, (payload)=>{ if(payload.payload?.from) markSeen(payload.payload.from, payload.payload.at); })
     .subscribe();
 }
 
@@ -2269,7 +2277,7 @@ function stopInboxTypingChannel(){
 function markTyping(fromId){
   let p = myConversations.find(c=>c.id===fromId);
   let isNewRow = false;
-  if(!p){ p = { id:fromId, name:'Someone', lastMessage:null, lastAt:null, lastMine:false, unread:false, lastSeenAt:null, typing:false, theirSeenAt:null }; myConversations.unshift(p); isNewRow = true; }
+  if(!p){ p = { id:fromId, name:'Someone', lastMessage:null, lastAt:null, lastMine:false, unread:false, lastSeenAt:null, typing:false }; myConversations.unshift(p); isNewRow = true; }
   p.typing = true;
   clearTimeout(p._typingTimer);
   // Only a brand-new row needs the whole inbox list rebuilt (it doesn't
@@ -2331,33 +2339,30 @@ function patchInboxRowForNewMessage(id){
   if(list && list.firstElementChild !== row) list.prepend(row);
 }
 
-// Records that the other participant has seen my messages up to `at`.
-// Drives the "Seen" marker under my last sent message in that thread.
-function markSeen(fromId, at){
-  const p = myConversations.find(c=>c.id===fromId);
-  if(p) p.theirSeenAt = at;
-  const openOtherId = state.profile?.role==='teacher' ? chatStudentId : chatTeacherId;
-  if(chatWidgetOpen && chatWidgetView==='thread' && fromId===openOtherId) renderChatMessagesList();
+// Marks every not-yet-read message FROM otherId TO me as read, persisted
+// in the database (via the mark_messages_read function — see README for
+// the migration) so it survives a refresh, unlike the old broadcast-only
+// "seen" ping which forgot everything the moment either side reloaded.
+// The sender finds out live through the messages realtime subscription's
+// UPDATE handler below, not through this call directly.
+function markThreadRead(otherId){
+  if(!otherId || !state.session) return;
+  sb.rpc('mark_messages_read', { other_id: otherId }).then(({error})=>{
+    if(error) console.error('Failed to mark messages read', error);
+  });
 }
 
-// The channel I send my own typing/seen pings on, pointed at whichever
-// thread is currently open. Subscribing itself sends an initial "seen"
-// ping, since opening a thread means you've just seen everything in it.
+// The channel I send my own typing pings on, pointed at whichever thread
+// is currently open.
 function subscribeOutgoingTypingChannel(otherId){
   teardownOutgoingTypingChannel();
-  chatOutgoingTypingChannel = sb.channel(`inbox-typing-${otherId}`)
-    .subscribe((status)=>{ if(status==='SUBSCRIBED') sendSeenPing(); });
+  chatOutgoingTypingChannel = sb.channel(`inbox-typing-${otherId}`).subscribe();
 }
 
 function teardownOutgoingTypingChannel(){
   if(chatOutgoingTypingChannel){ sb.removeChannel(chatOutgoingTypingChannel); chatOutgoingTypingChannel = null; }
   clearTimeout(chatTypingHideTimer); chatTypingHideTimer = null;
   chatOtherTyping = false;
-}
-
-function sendSeenPing(){
-  if(!chatOutgoingTypingChannel) return;
-  chatOutgoingTypingChannel.send({ type:'broadcast', event:'seen', payload:{ from: state.session.user.id, at: new Date().toISOString() } });
 }
 
 // Bound to the chat input's oninput — throttled so it broadcasts at most
@@ -2439,7 +2444,7 @@ function openThread(otherId, fallbackName){
 function openChat(teacherId, studentId, otherName){
   const otherId = state.profile?.role==='teacher' ? studentId : teacherId;
   if(!myConversations.some(c=>c.id===otherId)){
-    myConversations.unshift({ id:otherId, name: otherName || 'them', lastMessage:null, lastAt:null, lastMine:false, unread:false, typing:false, theirSeenAt:null });
+    myConversations.unshift({ id:otherId, name: otherName || 'them', lastMessage:null, lastAt:null, lastMine:false, unread:false, typing:false });
   }
   openThread(otherId, otherName);
 }
@@ -2466,6 +2471,7 @@ async function loadChatMessages(){
   if(chatWidgetView!=='thread') return; // navigated away from this thread before the fetch resolved
   renderChatDock();
   scrollChatToBottom();
+  markThreadRead(state.profile?.role==='teacher' ? chatStudentId : chatTeacherId);
 }
 
 function scrollChatToBottom(){
@@ -2502,22 +2508,51 @@ function appendChatMessage(m){
   }
   const myId = state.session?.user?.id;
   const { lastSeenMineIdx } = seenBoundary(myId);
-  el.insertAdjacentHTML('beforeend', chatMessageRowHTML(m, chatMessages.length - 1, myId, lastSeenMineIdx));
+  const newIdx = chatMessages.length - 1;
+  // The message right before this one is no longer the last in the list —
+  // if it groups into the same burst as this new one, hide its timestamp
+  // now that this one is showing it instead.
+  if(newIdx > 0){
+    const prevIdx = newIdx - 1;
+    const prev = chatMessages[prevIdx];
+    const prevMeta = document.getElementById(`chatMsgMeta-${prev.id}`);
+    if(prevMeta){
+      const prevSeenHere = prev.sender_id===myId && prevIdx===lastSeenMineIdx;
+      prevMeta.style.display = chatShowsMeta(prevIdx, prevSeenHere) ? '' : 'none';
+    }
+  }
+  el.insertAdjacentHTML('beforeend', chatMessageRowHTML(m, newIdx, myId, lastSeenMineIdx));
   el.scrollTop = el.scrollHeight;
 }
 
-// Index of the most recent message of mine that's actually been seen
-// (created_at <= theirSeenAt) — that's where the "Seen" marker belongs,
-// even if I've sent newer messages since that haven't been seen yet.
+// Index of the most recent message of mine that's actually been read
+// (its persisted read_at is set) — that's where the "Seen" marker
+// belongs, even if I've sent newer messages since that haven't been read
+// yet. Driven entirely by data that came back from the database, so it's
+// correct again immediately after a refresh, unlike the old
+// broadcast-only version which forgot everything on reload.
 function seenBoundary(myId){
-  const otherId = state.profile?.role==='teacher' ? chatStudentId : chatTeacherId;
-  const theirSeenAt = myConversations.find(c=>c.id===otherId)?.theirSeenAt;
   let lastSeenMineIdx = -1;
-  if(theirSeenAt){
-    const seenAtTime = new Date(theirSeenAt).getTime();
-    chatMessages.forEach((m,i)=>{ if(m.sender_id===myId && new Date(m.created_at).getTime() <= seenAtTime) lastSeenMineIdx = i; });
-  }
+  chatMessages.forEach((m,i)=>{ if(m.sender_id===myId && m.read_at) lastSeenMineIdx = i; });
   return { lastSeenMineIdx };
+}
+
+// Consecutive messages from the same sender sent within this window count
+// as one "burst" — only the last message in a burst shows its timestamp,
+// so firing off 3-4 messages in a row doesn't repeat the same time under
+// every single one.
+const CHAT_GROUP_WINDOW_MS = 3 * 60 * 1000;
+
+// Whether message index i should show its time/Seen line: always for the
+// line that's actually carrying "Seen", always for the last message in
+// the thread, and otherwise only when the next message is from someone
+// else or arrived more than CHAT_GROUP_WINDOW_MS later.
+function chatShowsMeta(i, seenHere){
+  if(seenHere) return true;
+  if(i === chatMessages.length - 1) return true;
+  const cur = chatMessages[i], next = chatMessages[i+1];
+  if(!next || cur.sender_id !== next.sender_id) return true;
+  return (new Date(next.created_at) - new Date(cur.created_at)) > CHAT_GROUP_WINDOW_MS;
 }
 
 // Renders one message row — shared by the full-list render and by
@@ -2525,6 +2560,7 @@ function seenBoundary(myId){
 function chatMessageRowHTML(m, i, myId, lastSeenMineIdx){
   const mine = m.sender_id === myId;
   const seenHere = mine && i===lastSeenMineIdx;
+  const showMeta = chatShowsMeta(i, seenHere);
   const quoted = m.reply_to ? chatMessages.find(x=>x.id===m.reply_to) : null;
   const quoteHtml = !m.reply_to ? '' : quoted
     ? `<div class="muted" data-action="scroll-to-message" data-id="${quoted.id}" style="background:${mine?'rgba(255,255,255,0.18)':'rgba(0,0,0,0.06)'}; border-left:3px solid ${mine?'rgba(255,255,255,0.75)':'var(--primary)'}; border-radius:6px; padding:4px 8px; margin-bottom:5px; cursor:pointer; color:inherit;">
@@ -2537,7 +2573,7 @@ function chatMessageRowHTML(m, i, myId, lastSeenMineIdx){
     ${mine ? replyBtn : ''}
     <div style="max-width:82%; min-width:0;">
       <div id="chatMsg-${m.id}" style="background:${mine?'var(--primary)':'var(--divider-soft)'}; color:${mine?'#fff':'var(--text)'}; padding:8px 12px; border-radius:14px; ${mine?'border-bottom-right-radius:4px;':'border-bottom-left-radius:4px;'} font-size:13px; line-height:1.5; word-break:break-word;">${quoteHtml}${escapeHtml(m.body)}</div>
-      <div class="muted" style="font-size:10px; margin-top:3px; text-align:${mine?'right':'left'};">${new Date(m.created_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}${seenHere ? ' · <span style="color:var(--primary); font-weight:700;">Seen</span>' : ''}</div>
+      <div id="chatMsgMeta-${m.id}" class="muted" style="font-size:10px; margin-top:3px; text-align:${mine?'right':'left'}; display:${showMeta?'':'none'};">${new Date(m.created_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}${seenHere ? ' · <span style="color:var(--primary); font-weight:700;">Seen</span>' : ''}</div>
     </div>
     ${!mine ? replyBtn : ''}
   </div>`;
@@ -3027,7 +3063,7 @@ document.addEventListener('click', (e)=>{
           // Surface this teacher in the chat inbox right away, rather than
           // waiting for the next full conversations refresh.
           if(!myConversations.some(c=>c.id===el.dataset.id)){
-            myConversations.unshift({ id:el.dataset.id, name:el.dataset.name, lastMessage:null, lastAt:null, lastMine:false, unread:false, typing:false, theirSeenAt:null });
+            myConversations.unshift({ id:el.dataset.id, name:el.dataset.name, lastMessage:null, lastAt:null, lastMine:false, unread:false, typing:false });
             renderChatDock();
           }
         }).finally(()=>setBtnLoading(el, false));
