@@ -193,6 +193,9 @@ a{ color:inherit; text-decoration:none; }
 .scroll-x{ display:flex; gap:10px; overflow-x:auto; padding-bottom:6px; scrollbar-width:none; }
 .scroll-x::-webkit-scrollbar{ display:none; }
 .grid-cards{ display:grid; grid-template-columns: repeat(auto-fill, minmax(290px,1fr)); gap:20px; }
+.grid-cards-3{ display:grid; grid-template-columns: repeat(3,1fr); gap:20px; }
+@media(max-width:860px){ .grid-cards-3{ grid-template-columns: 1fr; } }
+@media(min-width:861px) and (max-width:1100px){ .grid-cards-3{ grid-template-columns: repeat(2,1fr); } }
 .toast-wrap{ position:fixed; top:20px; right:20px; z-index:999; display:flex; flex-direction:column; gap:10px; }
 .toast{ padding:14px 20px; border-radius:14px; font-size:14px; font-weight:600; min-width:260px; animation: toastIn .35s cubic-bezier(.2,.9,.3,1.2) both; display:flex; align-items:center; gap:10px;}
 @keyframes toastIn{ from{ opacity:0; transform: translateX(40px);} to{ opacity:1; transform:translateX(0);} }
@@ -1190,7 +1193,7 @@ function setupMissingScreen(){
    CUSTOMER PORTAL — HOME
 ========================================================= */
 function viewHome(){
-  const featured = TEACHERS.slice(0,4);
+  const featured = TEACHERS.slice(0,6);
   return `
   ${navbar()}
   <div class="wrap view-transition" style="padding-top:40px;">
@@ -1212,7 +1215,7 @@ function viewHome(){
         <h2 style="font-size:24px;">Featured near you</h2>
         <button class="btn btn-ghost btn-sm" data-action="go" data-view="browse">View all →</button>
       </div>
-      ${featured.length ? `<div class="grid-cards stagger">${featured.map(teacherCard).join('')}</div>` : `<div class="glass" style="padding:40px; text-align:center;"><p class="muted">No teachers have listed themselves yet — be the first!</p><button class="btn btn-primary btn-sm" style="margin-top:12px;" data-action="register-as-teacher">Register as a teacher</button></div>`}
+      ${featured.length ? `<div class="grid-cards-3 stagger">${featured.map(teacherCard).join('')}</div>` : `<div class="glass" style="padding:40px; text-align:center;"><p class="muted">No teachers have listed themselves yet — be the first!</p><button class="btn btn-primary btn-sm" style="margin-top:12px;" data-action="register-as-teacher">Register as a teacher</button></div>`}
     </div>
 
     <div style="margin-top:64px; display:grid; grid-template-columns:repeat(3,1fr); gap:20px;" class="fade-in grid-2">
