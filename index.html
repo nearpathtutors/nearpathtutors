@@ -233,6 +233,12 @@ a{ color:inherit; text-decoration:none; }
   cursor:pointer; opacity:0; transition:opacity .15s ease;
 }
 .chat-msg-row:hover .chat-msg-reply-btn, .chat-msg-row:focus-within .chat-msg-reply-btn{ opacity:1; }
+/* Touch devices don't have a real :hover state, so the reply button would
+   otherwise stay invisible (and need a "phantom" first tap to reveal it
+   before a second tap could actually hit it). Keep it visibly present —
+   just a little faded — whenever there's no hover capability at all. */
+@media (hover:none){ .chat-msg-reply-btn{ opacity:.55; } }
+.chat-msg-reply-btn:active{ opacity:1; }
 .chat-msg-highlight{ box-shadow:0 0 0 2px var(--primary) !important; }
 
 /* ticket / class-slip signature element */
@@ -549,7 +555,10 @@ function relativeTime(iso){
   return new Date(iso).toLocaleDateString(undefined, {day:'numeric', month:'short'});
 }
 
-function toast(msg, type){
+// onClick is optional — when passed (e.g. the incoming-message toast), the
+// whole toast becomes tappable, and tapping it runs onClick (jumps to the
+// relevant chat thread) then dismisses the toast right away.
+function toast(msg, type, onClick){
   const wrap = document.getElementById('toastWrap');
   const el = document.createElement('div');
   const colors = {ok:'linear-gradient(135deg,#2ECC71,#27ae60)', info:'linear-gradient(135deg,#6C5CE7,#EC4899)', warn:'linear-gradient(135deg,#F5A623,#e67e22)', err:'linear-gradient(135deg,#FB6A6A,#c0392b)'};
@@ -557,8 +566,16 @@ function toast(msg, type){
   el.style.background = colors[type||'info'];
   el.style.color = '#fff';
   el.innerHTML = msg;
+  if(onClick){
+    el.style.cursor = 'pointer';
+    el.addEventListener('click', ()=>{
+      onClick();
+      el.style.transition='opacity .2s ease, transform .2s ease'; el.style.opacity='0'; el.style.transform='translateX(40px)';
+      setTimeout(()=>el.remove(),200);
+    });
+  }
   wrap.appendChild(el);
-  setTimeout(()=>{ el.style.transition='opacity .4s ease, transform .4s ease'; el.style.opacity='0'; el.style.transform='translateX(40px)'; setTimeout(()=>el.remove(),400); }, 3200);
+  setTimeout(()=>{ if(!el.isConnected) return; el.style.transition='opacity .4s ease, transform .4s ease'; el.style.opacity='0'; el.style.transform='translateX(40px)'; setTimeout(()=>el.remove(),400); }, 3200);
 }
 
 // Puts a button into/out of a spinning "buffering" state while an async
@@ -2030,12 +2047,15 @@ function subscribeSessionRealtime(){
       }
 
       let p = myConversations.find(c=>c.id===otherId);
+      let isNewRow = false;
       if(!p){
         p = { id:otherId, name: null, lastMessage:null, lastAt:null, lastMine:false, unread:false, typing:false, theirSeenAt:null };
         myConversations.unshift(p);
+        isNewRow = true;
         sb.from('profiles').select('full_name').eq('id', otherId).single().then(({data})=>{
           p.name = data?.full_name || 'Someone';
-          renderChatDock();
+          if(chatWidgetOpen && chatWidgetView==='inbox') patchInboxRowForNewMessage(otherId);
+          else if(!chatWidgetOpen) renderChatDock();
         });
       }
       p.lastMessage = m.body;
@@ -2048,10 +2068,24 @@ function subscribeSessionRealtime(){
         playPingSound();
         if(!isOpenThread){
           const preview = m.body.length>60 ? m.body.slice(0,60)+'…' : m.body;
-          toast('💬 ' + escapeHtml(p.name || 'New message') + ': ' + escapeHtml(preview), 'ok');
+          toast('💬 ' + escapeHtml(p.name || 'New message') + ': ' + escapeHtml(preview), 'ok', ()=> openThread(otherId, p.name));
         }
       }
-      if(!isOpenThread) renderChatDock(); // refresh the bubble badge / inbox list
+      if(!isOpenThread){
+        if(isNewRow || !chatWidgetOpen){
+          // A brand-new conversation needs the whole list rebuilt so the row
+          // exists at all; when the dock's collapsed this is just the tiny
+          // bubble badge, so it's cheap either way.
+          renderChatDock();
+        }else if(chatWidgetView==='inbox'){
+          // The inbox is open on an *existing* row — patch it in place
+          // rather than rebuilding the whole list, so it doesn't look like
+          // the chat is continuously reloading every time a message lands.
+          patchInboxRowForNewMessage(otherId);
+        }
+        // else: a different thread is open right now — nothing on screen
+        // needs to change; the inbox will pick this up next time it's opened.
+      }
     })
     .subscribe();
 }
@@ -2247,6 +2281,27 @@ function patchInboxRowPreview(id){
   if(!c || !el) return;
   el.innerHTML = c.typing ? `<span style="color:var(--amber); font-weight:700;">typing…</span>`
     : (c.lastMessage ? escapeHtml((c.lastMine?'You: ':'') + c.lastMessage) : (presenceLabel(c.id, c.lastSeenAt) || 'Say hello 👋'));
+}
+
+// Updates one existing inbox row for a freshly-arrived message — preview
+// text, date, bold/unread state, and moves it to the top of the list —
+// without touching any other row. This is what keeps the inbox from
+// visibly "reloading" every time a message comes in while it's open; only
+// a genuinely new conversation (no row to patch yet) needs a full rebuild.
+function patchInboxRowForNewMessage(id){
+  const c = myConversations.find(x=>x.id===id);
+  const row = document.getElementById(`chatRow-${id}`);
+  if(!c || !row) return;
+  patchInboxRowPreview(id);
+  row.style.background = c.unread ? 'var(--divider-soft)' : '';
+  const nameEl = document.getElementById(`chatRowName-${id}`);
+  if(nameEl) nameEl.style.fontWeight = c.unread ? '700' : '600';
+  const dateEl = document.getElementById(`chatRowDate-${id}`);
+  if(dateEl && c.lastAt){ dateEl.textContent = new Date(c.lastAt).toLocaleDateString(undefined,{day:'numeric',month:'short'}); dateEl.style.display = ''; }
+  const dotEl = document.getElementById(`chatRowDot-${id}`);
+  if(dotEl) dotEl.style.display = c.unread ? '' : 'none';
+  const list = row.parentElement;
+  if(list && list.firstElementChild !== row) list.prepend(row);
 }
 
 // Records that the other participant has seen my messages up to `at`.
@@ -2535,12 +2590,12 @@ function chatInboxHTML(){
           </div>
           <div style="flex:1; min-width:0;">
             <div style="display:flex; justify-content:space-between; gap:6px;">
-              <span style="font-size:13.5px; font-weight:${c.unread?'700':'600'}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(c.name)}</span>
-              ${c.lastAt ? `<span class="muted" style="font-size:10px; flex-shrink:0;">${new Date(c.lastAt).toLocaleDateString(undefined,{day:'numeric',month:'short'})}</span>` : ''}
+              <span id="chatRowName-${c.id}" style="font-size:13.5px; font-weight:${c.unread?'700':'600'}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(c.name)}</span>
+              <span id="chatRowDate-${c.id}" class="muted" style="font-size:10px; flex-shrink:0; ${c.lastAt?'':'display:none;'}">${c.lastAt ? new Date(c.lastAt).toLocaleDateString(undefined,{day:'numeric',month:'short'}) : ''}</span>
             </div>
             <div class="muted" id="chatRowPreview-${c.id}" style="font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${c.typing ? `<span style="color:var(--amber); font-weight:700;">typing…</span>` : (c.lastMessage ? escapeHtml((c.lastMine?'You: ':'') + c.lastMessage) : (presence || 'Say hello 👋'))}</div>
           </div>
-          ${c.unread ? `<span style="width:8px; height:8px; border-radius:50%; background:var(--primary); flex-shrink:0;"></span>` : ''}
+          <span id="chatRowDot-${c.id}" style="width:8px; height:8px; border-radius:50%; background:var(--primary); flex-shrink:0; ${c.unread?'':'display:none;'}"></span>
         </div>`;}).join('')}
     </div>
   `;
