@@ -2099,8 +2099,12 @@ async function ensureConversations(force){
     }
 
     const col = role==='teacher' ? 'teacher_id' : 'student_id';
-    const { data: msgs, error: msgErr } = await sb.from('messages').select('teacher_id, student_id, sender_id, body, created_at').eq(col, uid).order('created_at', {ascending:true});
+    const { data: msgs, error: msgErr } = await sb.from('messages').select('teacher_id, student_id, sender_id, body, created_at, read_at').eq(col, uid).order('created_at', {ascending:true});
     if(msgErr) throw msgErr;
+    // The thread I currently have open (if any) is always treated as read —
+    // its messages get marked read the moment it's opened (see loadChatMessages),
+    // but that write can lag a beat behind this query.
+    const openOtherId = (chatWidgetOpen && chatWidgetView==='thread') ? (role==='teacher' ? chatStudentId : chatTeacherId) : null;
     msgs.forEach(m=>{
       const otherId = role==='teacher' ? m.student_id : m.teacher_id;
       let p = partners.get(otherId);
@@ -2111,6 +2115,9 @@ async function ensureConversations(force){
       p.lastMessage = m.body;
       p.lastAt = m.created_at;
       p.lastMine = m.sender_id === uid;
+      // Recomputed on every message in order, so by the end this reflects
+      // only the most recent message's read status, per partner.
+      p.unread = otherId !== openOtherId && m.sender_id !== uid && !m.read_at;
     });
 
     // Resolve display names for any partner discovered only via messages
@@ -2144,7 +2151,7 @@ async function ensureConversations(force){
     const merged = new Map(myConversations.map(c=>[c.id, c]));
     partners.forEach((fresh, id)=>{
       const existing = merged.get(id);
-      merged.set(id, existing ? { ...existing, ...fresh, unread: existing.unread } : fresh);
+      merged.set(id, existing ? { ...existing, ...fresh } : fresh);
     });
     myConversations = [...merged.values()].sort((a,b)=> new Date(b.lastAt||0) - new Date(a.lastAt||0));
     conversationsStatus = 'ready';
