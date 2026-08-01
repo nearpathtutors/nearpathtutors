@@ -2063,7 +2063,7 @@ function startPresence(){
   presenceChannel
     .on('presence', {event:'sync'}, ()=>{
       onlineUserIds = new Set(Object.keys(presenceChannel.presenceState()));
-      renderChatDock();
+      patchPresenceUI();
     })
     .subscribe((status)=>{ if(status==='SUBSCRIBED') presenceChannel.track({ online_at: new Date().toISOString() }); });
 
@@ -2094,6 +2094,43 @@ function presenceLabel(id, lastSeenAt){
   if(onlineUserIds.has(id)) return '🟢 Online';
   if(lastSeenAt) return 'Last seen ' + relativeTime(lastSeenAt);
   return '';
+}
+
+// A presence "sync" fires whenever ANYONE's online status changes
+// anywhere on the site — not just the person I'm currently talking to —
+// so this has to be a light, targeted patch rather than renderChatDock().
+// Rebuilding the whole dock on every stranger's connect/disconnect is
+// what made the open thread (input box included) look like it kept
+// reloading.
+function patchPresenceUI(){
+  if(!chatWidgetOpen) return;
+  if(chatWidgetView==='inbox'){
+    myConversations.forEach(c=>{
+      const wrap = document.getElementById(`chatAvatarWrap-${c.id}`);
+      if(wrap){
+        const online = onlineUserIds.has(c.id);
+        const existingDot = wrap.querySelector('.chat-online-dot');
+        if(online && !existingDot){
+          const dot = document.createElement('span');
+          dot.className = 'chat-online-dot';
+          dot.style.cssText = 'position:absolute; bottom:-1px; right:-1px; width:10px; height:10px; border-radius:50%; background:#2ecc71; border:2px solid var(--bg2);';
+          wrap.appendChild(dot);
+        }else if(!online && existingDot){
+          existingDot.remove();
+        }
+      }
+      // Only refresh the preview text when it's currently showing a
+      // presence label (not a real message or a "typing…" ping) —
+      // otherwise this would stomp on those.
+      if(!c.typing && !c.lastMessage) patchInboxRowPreview(c.id);
+    });
+  }else if(chatWidgetView==='thread'){
+    const otherId = state.profile?.role==='teacher' ? chatStudentId : chatTeacherId;
+    const convo = myConversations.find(c=>c.id===otherId);
+    const presence = presenceLabel(otherId, convo?.lastSeenAt);
+    const el = document.getElementById('chatThreadPresence');
+    if(el){ el.textContent = presence; el.style.display = presence ? '' : 'none'; }
+  }
 }
 
 // A short, synthesized "ping" for an incoming message — no audio file
@@ -2143,10 +2180,17 @@ function stopInboxTypingChannel(){
 // fine there (nothing to disturb).
 function markTyping(fromId){
   let p = myConversations.find(c=>c.id===fromId);
-  if(!p){ p = { id:fromId, name:'Someone', lastMessage:null, lastAt:null, lastMine:false, unread:false, lastSeenAt:null, typing:false, theirSeenAt:null }; myConversations.unshift(p); }
+  let isNewRow = false;
+  if(!p){ p = { id:fromId, name:'Someone', lastMessage:null, lastAt:null, lastMine:false, unread:false, lastSeenAt:null, typing:false, theirSeenAt:null }; myConversations.unshift(p); isNewRow = true; }
   p.typing = true;
   clearTimeout(p._typingTimer);
-  p._typingTimer = setTimeout(()=>{ p.typing = false; if(chatWidgetOpen && chatWidgetView==='inbox') renderChatDock(); }, 3000);
+  // Only a brand-new row needs the whole inbox list rebuilt (it doesn't
+  // exist in the DOM yet). An existing row is patched in place below —
+  // and same here, when the "typing…" clears after the pause.
+  p._typingTimer = setTimeout(()=>{
+    p.typing = false;
+    if(chatWidgetOpen && chatWidgetView==='inbox') patchInboxRowPreview(p.id);
+  }, 3000);
 
   const openOtherId = state.profile?.role==='teacher' ? chatStudentId : chatTeacherId;
   if(chatWidgetOpen && chatWidgetView==='thread' && fromId===openOtherId){
@@ -2155,7 +2199,27 @@ function markTyping(fromId){
     clearTimeout(chatTypingHideTimer);
     chatTypingHideTimer = setTimeout(()=>{ chatOtherTyping = false; renderChatTypingIndicator(); }, 3000);
   }
-  if(chatWidgetOpen && chatWidgetView==='inbox') renderChatDock();
+  if(chatWidgetOpen && chatWidgetView==='inbox'){
+    // A typing ping arrives roughly every 1.5s for as long as the other
+    // person keeps typing. Calling renderChatDock() here would replace the
+    // *entire* dock's innerHTML on that same cadence — tearing down and
+    // rebuilding every row, losing scroll position, and making the whole
+    // message box look like it's continuously reloading. Patch just the
+    // one row's preview text instead; only a genuinely new row (handled
+    // above) needs a full rebuild.
+    if(isNewRow) renderChatDock();
+    else patchInboxRowPreview(p.id);
+  }
+}
+
+// Updates a single inbox row's preview line ("typing…" / last message /
+// presence) in place, without touching the rest of the list.
+function patchInboxRowPreview(id){
+  const c = myConversations.find(x=>x.id===id);
+  const el = document.getElementById(`chatRowPreview-${id}`);
+  if(!c || !el) return;
+  el.innerHTML = c.typing ? `<span style="color:var(--amber); font-weight:700;">typing…</span>`
+    : (c.lastMessage ? escapeHtml((c.lastMine?'You: ':'') + c.lastMessage) : (presenceLabel(c.id, c.lastSeenAt) || 'Say hello 👋'));
 }
 
 // Records that the other participant has seen my messages up to `at`.
@@ -2302,11 +2366,21 @@ function chatMessagesHTML(){
   const myId = state.session?.user?.id;
   const otherId = state.profile?.role==='teacher' ? chatStudentId : chatTeacherId;
   const theirSeenAt = myConversations.find(c=>c.id===otherId)?.theirSeenAt;
-  let lastMineIdx = -1;
-  chatMessages.forEach((m,i)=>{ if(m.sender_id===myId) lastMineIdx = i; });
+  // The "Seen" tag belongs on the most recent message of mine that's
+  // actually been seen (created_at <= theirSeenAt) — NOT always on the
+  // last message I sent. Otherwise, sending a new message after they've
+  // already seen everything up to that point makes the marker vanish
+  // entirely (the newest message hasn't been seen yet, so the old check
+  // "only ever look at the last message" found nothing), even though the
+  // earlier message they *did* see should keep showing it.
+  let lastSeenMineIdx = -1;
+  if(theirSeenAt){
+    const seenAtTime = new Date(theirSeenAt).getTime();
+    chatMessages.forEach((m,i)=>{ if(m.sender_id===myId && new Date(m.created_at).getTime() <= seenAtTime) lastSeenMineIdx = i; });
+  }
   return chatMessages.map((m,i)=>{
     const mine = m.sender_id === myId;
-    const seenHere = mine && i===lastMineIdx && theirSeenAt && new Date(m.created_at) <= new Date(theirSeenAt);
+    const seenHere = mine && i===lastSeenMineIdx;
     return `<div style="align-self:${mine?'flex-end':'flex-start'}; max-width:82%;">
       <div style="background:${mine?'var(--primary)':'var(--divider-soft)'}; color:${mine?'#fff':'var(--text)'}; padding:8px 12px; border-radius:14px; ${mine?'border-bottom-right-radius:4px;':'border-bottom-left-radius:4px;'} font-size:13px; line-height:1.5; word-break:break-word;">${escapeHtml(m.body)}</div>
       <div class="muted" style="font-size:10px; margin-top:3px; text-align:${mine?'right':'left'};">${new Date(m.created_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}${seenHere ? ' · <span style="color:var(--primary); font-weight:700;">Seen</span>' : ''}</div>
@@ -2328,17 +2402,17 @@ function chatInboxHTML(){
         myConversations.map(c=>{
           const presence = presenceLabel(c.id, c.lastSeenAt);
           return `
-        <div style="display:flex; align-items:center; gap:10px; padding:9px 8px; border-radius:12px; cursor:pointer; ${c.unread?'background:var(--divider-soft);':''}" data-action="open-thread" data-id="${c.id}">
-          <div style="position:relative; flex-shrink:0;">
+        <div id="chatRow-${c.id}" style="display:flex; align-items:center; gap:10px; padding:9px 8px; border-radius:12px; cursor:pointer; ${c.unread?'background:var(--divider-soft);':''}" data-action="open-thread" data-id="${c.id}">
+          <div id="chatAvatarWrap-${c.id}" style="position:relative; flex-shrink:0;">
             <div style="width:36px; height:36px; border-radius:50%; background:var(--primary); color:#fff; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:13px;">${escapeHtml((c.name||'?').slice(0,1).toUpperCase())}</div>
-            ${onlineUserIds.has(c.id) ? `<span style="position:absolute; bottom:-1px; right:-1px; width:10px; height:10px; border-radius:50%; background:#2ecc71; border:2px solid var(--bg2);"></span>` : ''}
+            ${onlineUserIds.has(c.id) ? `<span class="chat-online-dot" style="position:absolute; bottom:-1px; right:-1px; width:10px; height:10px; border-radius:50%; background:#2ecc71; border:2px solid var(--bg2);"></span>` : ''}
           </div>
           <div style="flex:1; min-width:0;">
             <div style="display:flex; justify-content:space-between; gap:6px;">
               <span style="font-size:13.5px; font-weight:${c.unread?'700':'600'}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(c.name)}</span>
               ${c.lastAt ? `<span class="muted" style="font-size:10px; flex-shrink:0;">${new Date(c.lastAt).toLocaleDateString(undefined,{day:'numeric',month:'short'})}</span>` : ''}
             </div>
-            <div class="muted" style="font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${c.typing ? `<span style="color:var(--amber); font-weight:700;">typing…</span>` : (c.lastMessage ? escapeHtml((c.lastMine?'You: ':'') + c.lastMessage) : (presence || 'Say hello 👋'))}</div>
+            <div class="muted" id="chatRowPreview-${c.id}" style="font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${c.typing ? `<span style="color:var(--amber); font-weight:700;">typing…</span>` : (c.lastMessage ? escapeHtml((c.lastMine?'You: ':'') + c.lastMessage) : (presence || 'Say hello 👋'))}</div>
           </div>
           ${c.unread ? `<span style="width:8px; height:8px; border-radius:50%; background:var(--primary); flex-shrink:0;"></span>` : ''}
         </div>`;}).join('')}
@@ -2355,7 +2429,7 @@ function chatThreadHTML(){
       <span style="cursor:pointer; font-size:19px; line-height:1; color:var(--text-dim);" data-action="back-to-inbox">←</span>
       <div style="flex:1; min-width:0;">
         <h3 style="font-size:14.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(chatOtherName)}</h3>
-        ${presence ? `<div class="muted" style="font-size:10.5px;">${escapeHtml(presence)}</div>` : ''}
+        <div class="muted" id="chatThreadPresence" style="font-size:10.5px; ${presence?'':'display:none;'}">${escapeHtml(presence)}</div>
       </div>
       <span style="cursor:pointer; font-size:20px; line-height:1; color:var(--text-dim);" data-action="toggle-chat">&times;</span>
     </div>
