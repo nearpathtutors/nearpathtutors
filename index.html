@@ -259,18 +259,12 @@ a{ color:inherit; text-decoration:none; }
 
 /* navbar */
 .nav{ position:sticky; top:0; z-index:100; padding:16px 0; }
-.nav-inner{ position:relative; display:flex; align-items:center; justify-content:space-between; padding:12px 20px; gap:10px; }
-.logo{ display:flex; align-items:center; gap:10px; font-family:var(--display); font-weight:700; font-size:19px; flex-shrink:0; }
-.logo-mark{ width:34px; height:34px; border-radius:10px; background: linear-gradient(135deg, var(--primary), var(--primary2)); display:flex; align-items:center; justify-content:center; font-size:16px; flex-shrink:0; }
+.nav-inner{ display:flex; align-items:center; justify-content:space-between; padding:12px 20px; }
+.logo{ display:flex; align-items:center; gap:10px; font-family:var(--display); font-weight:700; font-size:19px; }
+.logo-mark{ width:34px; height:34px; border-radius:10px; background: linear-gradient(135deg, var(--primary), var(--primary2)); display:flex; align-items:center; justify-content:center; font-size:16px; }
 .nav-links{ display:flex; gap:4px; align-items:center; }
-.nav-links a, .nav-links button{ background:none; border:none; color:var(--text-dim); font-weight:600; font-size:14px; padding:9px 14px; border-radius:100px; cursor:pointer; transition: all .2s ease; font-family:var(--body); white-space:nowrap; }
+.nav-links a, .nav-links button{ background:none; border:none; color:var(--text-dim); font-weight:600; font-size:14px; padding:9px 14px; border-radius:100px; cursor:pointer; transition: all .2s ease; font-family:var(--body); }
 .nav-links a:hover, .nav-links button:hover{ color:var(--text); background: var(--glass); }
-.nav-actions{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; justify-content:flex-end; }
-.mobile-menu-btn{
-  display:none; width:38px; height:38px; flex-shrink:0; align-items:center; justify-content:center;
-  background:var(--glass); border:1px solid var(--glass-border); color:var(--text);
-  border-radius:10px; cursor:pointer; font-size:16px;
-}
 
 /* calendar */
 .cal-grid{ display:grid; grid-template-columns: repeat(7, 1fr); gap:8px; }
@@ -292,47 +286,13 @@ table.data-table tr:hover td{ background: var(--divider-soft); }
 .stat-num{ font-family:var(--display); font-size:32px; font-weight:600; margin-top:4px; }
 
 @media(max-width:860px){
-  .mobile-menu-btn{ display:flex; }
-  .nav-links{
-    display:none;
-    position:absolute; top:calc(100% + 8px); left:0; right:0;
-    flex-direction:column; align-items:stretch; gap:2px;
-    background:var(--bg2); border:1px solid var(--glass-border); border-radius:16px;
-    padding:8px; box-shadow:0 16px 40px var(--shadow-card); z-index:150;
-  }
-  .nav-links.mobile-open{ display:flex; }
-  .nav-links a, .nav-links button{ text-align:left; padding:12px 14px; width:100%; }
+  .nav-links{ display:none; }
+  .hide-mobile{ display:none; }
   .grid-2{ grid-template-columns:1fr !important; }
   .dash-layout{ grid-template-columns:1fr !important; }
-  .filter-panel{ position:static !important; top:auto !important; }
 }
 .grid-2{ display:grid; grid-template-columns: 1.6fr 1fr; gap:24px; }
 .dash-layout{ display:grid; grid-template-columns: 220px 1fr; gap:24px; align-items:start; }
-
-/* ---------- table horizontal-scroll wrapper ---------- */
-.table-scroll{ width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; }
-.table-scroll table.data-table{ min-width:480px; }
-
-/* ---------- phone breakpoint ---------- */
-@media(max-width:640px){
-  .wrap{ padding:0 16px; }
-  .hero-search{ flex-direction:column; }
-  .hero-search .btn{ width:100%; }
-  .grid-cards{ grid-template-columns:1fr; }
-  .grid-cards-3{ grid-template-columns:1fr; }
-  h1{ font-size:28px !important; line-height:1.2 !important; }
-  h2{ font-size:20px !important; }
-  .modal{ padding:20px; max-width:100%; }
-  .stat-num{ font-size:24px; }
-  .nav-actions .pill-label{ display:none; }
-  .nav-actions .pill{ padding:9px; }
-  .ticket-stub{ width:64px; }
-  table.data-table th, table.data-table td{ padding:9px 8px; font-size:12.5px; }
-}
-@media(max-width:400px){
-  .wrap{ padding:0 12px; }
-  .nav-actions .btn-sm{ padding:8px 12px; font-size:12.5px; }
-}
 
 @media (prefers-reduced-motion: reduce){
   *{ animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
@@ -411,7 +371,6 @@ const state = {
   postLoginRedirect: null,   // { view, selectedTeacherId, selectedTeacherFrom, reopenEnquiryFor, reopenChatFor } — where (and what) to restore after logging in or signing up mid-action, anywhere on the site
   adminTab: 'analytics',       // 'analytics' | 'teachers' | 'students' — which panel the admin panel is showing
   maintenanceMode: false,    // mirrors site_settings.value.enabled — when true, every visitor except a logged-in admin sees the maintenance page instead of the site
-  mobileMenuOpen: false,     // whether the phone-width hamburger nav dropdown is open
 };
 try{
   var savedLoc = localStorage.getItem('npt-my-location');
@@ -649,7 +608,6 @@ window.addEventListener('hashchange', ()=>{
 
 function nav(view, extra, opts){
   state.view = view;
-  state.mobileMenuOpen = false;
   if(extra) Object.assign(state, extra);
   window.scrollTo({top:0, behavior:'smooth'});
   if(view==='home' || view==='browse' || view==='teacherProfile') ensureTeachers();
@@ -1388,8 +1346,7 @@ function navbar(){
         <div class="logo" style="cursor:pointer" data-action="go-home">
           <div class="logo-mark">🎓</div> NearPath Tutors
         </div>
-        <button class="mobile-menu-btn" data-action="toggle-mobile-menu" aria-label="Toggle menu">${state.mobileMenuOpen ? '✕' : '☰'}</button>
-        <div class="nav-links ${state.mobileMenuOpen ? 'mobile-open' : ''}">
+        <div class="nav-links">
           ${c==='customer' ? `
             <button data-action="go" data-view="home">Home</button>
             <button data-action="go" data-view="browse">Browse Teachers</button>
@@ -1399,9 +1356,9 @@ function navbar(){
             ${loggedIn && state.profile?.role==='teacher' ? `<button data-action="go" data-view="teacherDashboard">Dashboard</button>` : ''}
           `}
         </div>
-        <div class="nav-actions">
-          <div class="pill ${c==='customer'?'active':''}" data-action="switch-portal" data-portal="customer">👪 <span class="pill-label">Parents</span></div>
-          <div class="pill ${c==='teacher'?'active':''}" data-action="switch-portal" data-portal="teacher">🍎 <span class="pill-label">Teachers</span></div>
+        <div style="display:flex; gap:10px; align-items:center;">
+          <div class="pill ${c==='customer'?'active':''}" data-action="switch-portal" data-portal="customer">👪 Parents</div>
+          <div class="pill ${c==='teacher'?'active':''}" data-action="switch-portal" data-portal="teacher">🍎 Teachers</div>
           <button class="btn btn-ghost btn-sm" data-action="toggle-theme" title="Switch to ${currentTheme()==='dark'?'light':'dark'} theme" aria-label="Toggle theme">${currentTheme()==='dark' ? '☀️' : '🌙'}</button>
           <button class="btn btn-ghost btn-sm" data-action="go-admin" title="Admin panel" aria-label="Admin panel">🛡️</button>
           ${loggedIn
@@ -1444,7 +1401,7 @@ function viewHome(){
       <div class="eyebrow">Find teachers within your neighbourhood</div>
       <h1 style="font-size:44px; margin:14px 0 16px; max-width:720px; margin-left:auto; margin-right:auto; line-height:1.15;">A great teacher is usually closer than you think</h1>
       <p class="muted" style="font-size:16px; max-width:560px; margin:0 auto 30px;">Browse rated tutors, sports coaches and skill teachers near you — check timings, fees and reviews before you enquire.</p>
-      <div style="display:flex; gap:10px; max-width:600px; margin:0 auto;" class="hero-search">
+      <div style="display:flex; gap:10px; max-width:600px; margin:0 auto;" class="hide-mobile">
         <input class="input" id="heroSearch" placeholder="Search “Cricket coach”, “Abacus”, “Guitar”…" style="flex:1;" />
         <button class="btn btn-primary" data-action="search-from-hero">Search</button>
       </div>
@@ -1548,7 +1505,7 @@ function viewBrowse(){
         </div>
       </div>
       <div>
-        <div class="glass filter-panel" style="padding:22px; position:sticky; top:100px;">
+        <div class="glass" style="padding:22px; position:sticky; top:100px;">
           <h3 style="font-size:15px; margin-bottom:16px;">Filters</h3>
           <div class="field">
             <label class="field-label">Category</label>
@@ -1797,12 +1754,12 @@ function viewStudentDashboard(){
 
         <div class="glass" style="padding:24px;">
           <h3 style="font-size:16px; margin-bottom:14px;">Payment history</h3>
-          ${myPayments.length ? `<div class="table-scroll"><table class="data-table">
+          ${myPayments.length ? `<table class="data-table">
             <thead><tr><th>Date</th><th>Amt</th><th>Method</th></tr></thead>
             <tbody>
               ${myPayments.map(p=>`<tr><td class="muted">${new Date(p.paid_at).toLocaleDateString()}</td><td style="font-family:var(--mono)">₹${p.amount}</td><td class="muted">${p.method}</td></tr>`).join('')}
             </tbody>
-          </table></div>` : `<p class="muted" style="font-size:13px;">No payments recorded yet.</p>`}
+          </table>` : `<p class="muted" style="font-size:13px;">No payments recorded yet.</p>`}
         </div>
       </div>
     </div>
@@ -1902,7 +1859,7 @@ function teacherStudents(){
   return `
   <div class="glass" style="padding:22px;">
     <h3 style="font-size:15.5px; margin-bottom:16px;">My students</h3>
-    ${myStudents.length ? `<div class="table-scroll"><table class="data-table">
+    ${myStudents.length ? `<table class="data-table">
       <thead><tr><th>Name</th><th>Grade</th><th>Subject</th><th>Fee status</th><th>Fee</th><th></th></tr></thead>
       <tbody>
         ${myStudents.map(s=>`
@@ -1915,7 +1872,7 @@ function teacherStudents(){
           <td><button class="btn btn-ghost btn-sm" data-action="open-chat" data-teacher="${state.session.user.id}" data-student="${s.studentId}" data-name="${s.name}">💬 Chat</button></td>
         </tr>`).join('')}
       </tbody>
-    </table></div>` : `<p class="muted" style="font-size:13.5px;">No students enrolled yet. Share your profile link so parents can find you.</p>`}
+    </table>` : `<p class="muted" style="font-size:13.5px;">No students enrolled yet. Share your profile link so parents can find you.</p>`}
   </div>`;
 }
 
@@ -2126,7 +2083,7 @@ function viewAdminDashboard(){
 
     ${state.adminTab==='analytics' ? adminAnalyticsView() : `
     <div class="glass" style="padding:22px;">
-      ${rows.length ? `<div class="table-scroll"><table class="data-table">
+      ${rows.length ? `<table class="data-table">
         <thead><tr><th>Name</th>${state.adminTab==='teachers' ? '<th>Category</th><th>Subjects</th><th>Rating</th>' : ''}<th>Joined</th><th></th></tr></thead>
         <tbody>
           ${rows.map(p=>`
@@ -2140,7 +2097,7 @@ function viewAdminDashboard(){
             <td><button class="btn btn-ghost btn-sm" style="color:var(--red);" data-action="admin-delete-profile" data-id="${p.id}" data-name="${(p.full_name||'this user').replace(/"/g,'&quot;')}" data-role="${p.role}">🗑️ Remove</button></td>
           </tr>`).join('')}
         </tbody>
-      </table></div>` : `<p class="muted" style="font-size:13.5px;">No ${state.adminTab} yet.</p>`}
+      </table>` : `<p class="muted" style="font-size:13.5px;">No ${state.adminTab} yet.</p>`}
     </div>`}
   </div>`;
 }
@@ -2221,12 +2178,12 @@ function adminAnalyticsView(){
 
   <div class="glass" style="padding:22px; margin-bottom:20px;">
     <h3 style="font-size:15px; margin-bottom:16px;">Top-rated teachers</h3>
-    ${topTeachers.length ? `<div class="table-scroll"><table class="data-table">
+    ${topTeachers.length ? `<table class="data-table">
       <thead><tr><th>Name</th><th>Category</th><th>Rating</th></tr></thead>
       <tbody>
         ${topTeachers.map(t=>`<tr><td style="font-weight:600;">${t.full_name || 'Unnamed'}</td><td class="muted" style="text-transform:capitalize;">${t.listing?.category||'—'}</td><td style="color:${ratingColor(t.listing.rating)};">${starString(t.listing.rating)} <span class="muted">(${t.listing.reviews})</span></td></tr>`).join('')}
       </tbody>
-    </table></div>` : `<p class="muted" style="font-size:13px;">No reviews yet.</p>`}
+    </table>` : `<p class="muted" style="font-size:13px;">No reviews yet.</p>`}
   </div>
 
   <div class="glass" style="padding:22px;">
@@ -2234,7 +2191,7 @@ function adminAnalyticsView(){
       <h3 style="font-size:15px;">Review moderation</h3>
       <span class="muted" style="font-size:12px;">${ADMIN_REVIEWS.length} total</span>
     </div>
-    ${ADMIN_REVIEWS.length ? `<div class="table-scroll"><table class="data-table">
+    ${ADMIN_REVIEWS.length ? `<table class="data-table">
       <thead><tr><th>Teacher</th><th>Student</th><th>Rating</th><th>Comment</th><th>Date</th><th></th></tr></thead>
       <tbody>
         ${ADMIN_REVIEWS.map(r=>`
@@ -2247,7 +2204,7 @@ function adminAnalyticsView(){
           <td><button class="btn btn-ghost btn-sm" style="color:var(--red);" data-action="admin-delete-review" data-id="${r.id}" title="Remove review">🗑️</button></td>
         </tr>`).join('')}
       </tbody>
-    </table></div>` : `<p class="muted" style="font-size:13.5px;">No reviews yet.</p>`}
+    </table>` : `<p class="muted" style="font-size:13.5px;">No reviews yet.</p>`}
   </div>
   `;
 }
@@ -3275,11 +3232,7 @@ function render(){
 
 document.addEventListener('click', (e)=>{
   const el = e.target.closest('[data-action]');
-  if(!el){
-    if(state.mobileMenuOpen && !e.target.closest('.nav')){ state.mobileMenuOpen = false; render(); }
-    return;
-  }
-
+  if(!el) return;
   const action = el.dataset.action;
   switch(action){
     case 'go-home':
@@ -3295,10 +3248,6 @@ document.addEventListener('click', (e)=>{
       break;
     case 'go-admin':
       nav(state.session && state.profile?.role==='admin' ? 'adminDashboard' : 'adminAuth');
-      break;
-    case 'toggle-mobile-menu':
-      state.mobileMenuOpen = !state.mobileMenuOpen;
-      render();
       break;
     case 'toggle-maintenance':
       setBtnLoading(el, true);
