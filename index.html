@@ -499,6 +499,10 @@ let chatTypingSentAt = 0;
 
 let audioCtx = null; // lazily created on first ping, reused after
 
+let myBatches = [];         // batches (classes) the logged-in teacher has created, with their student rosters
+let myTrialRequests = [];   // trial-class requests the logged-in teacher has received (pending + resolved)
+let myTrialBookings = [];   // trial-class requests the logged-in student has made
+const WEEKDAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 let myReviews = [];         // reviews the logged-in student has already left, keyed by enrollment_id
 let teacherReviews = [];    // reviews shown on a teacher's public profile page
 let teacherReviewsStatus = 'idle';
@@ -1123,7 +1127,7 @@ async function ensureTeachers(force){
   try{
     const { data, error } = await sb
       .from('teacher_profiles')
-      .select('*, profiles(full_name), schedule_slots(day,time,subj)');
+      .select('*, profiles(full_name), schedule_slots(day,time,subj), batches(id,name,grade,subject,days,time,description,capacity,status)');
     if(error) throw error;
     TEACHERS = data.map(t=>({
       id: t.profile_id,
@@ -1143,6 +1147,7 @@ async function ensureTeachers(force){
       experience: t.experience || '—',
       bio: t.bio || 'This teacher hasn\'t written a bio yet.',
       schedule: t.schedule_slots || [],
+      batches: (t.batches || []).filter(b=>b.status==='active'),
       reviewList: [],
     }));
     teachersStatus = 'ready';
@@ -1160,18 +1165,24 @@ async function ensureStudentData(force){
   studentDataStatus = 'loading';
   try{
     const uid = state.session.user.id;
-    const [{data:enrollments, error:e1}, {data:payments, error:e2}, {data:reviews, error:e3}] = await Promise.all([
+    const [{data:enrollments, error:e1}, {data:payments, error:e2}, {data:reviews, error:e3}, {data:trials, error:e4}] = await Promise.all([
       sb.from('enrollments').select('*, teacher_profiles(profiles(full_name))').eq('student_id', uid).order('created_at',{ascending:false}),
       sb.from('payments').select('*').eq('student_id', uid).order('paid_at',{ascending:false}),
       sb.from('reviews').select('*').eq('student_id', uid),
+      sb.from('trial_requests').select('*, batches(name,subject,grade,days,time), teacher_profiles(profiles(full_name))').eq('student_id', uid).order('created_at',{ascending:false}),
     ]);
-    if(e1) throw e1; if(e2) throw e2; if(e3) throw e3;
+    if(e1) throw e1; if(e2) throw e2; if(e3) throw e3; if(e4) throw e4;
     myEnrollments = enrollments.map(e=>({
       id:e.id, teacherId:e.teacher_id, teacherName: e.teacher_profiles?.profiles?.full_name || 'Teacher',
       subject:e.subject, schedule:e.schedule, fee:e.fee, status:e.status, dueDate:e.due_date || '—',
     }));
     myPayments = payments;
     myReviews = reviews;
+    myTrialBookings = trials.map(r=>({
+      id:r.id, teacherId:r.teacher_id, teacherName: r.teacher_profiles?.profiles?.full_name || 'Teacher',
+      batchName: r.batches?.name || 'Class', subject: r.batches?.subject || '', grade: r.batches?.grade || '',
+      days: (r.batches?.days||[]).join(', '), time: r.batches?.time || '', status:r.status, note:r.note, createdAt:r.created_at,
+    }));
     studentDataStatus = 'ready';
   }catch(err){
     console.error('Failed to load student dashboard data', err);
@@ -1186,12 +1197,16 @@ async function ensureTeacherData(force){
   teacherDataStatus = 'loading';
   try{
     const uid = state.session.user.id;
-    const [{data, error}, {data:enquiries, error:eqErr}] = await Promise.all([
+    const [{data, error}, {data:enquiries, error:eqErr}, {data:batches, error:bErr}, {data:trials, error:trErr}] = await Promise.all([
       sb.from('enrollments').select('*, profiles(full_name)').eq('teacher_id', uid).order('created_at',{ascending:false}),
       sb.from('enquiries').select('*, profiles(full_name)').eq('teacher_id', uid).order('created_at',{ascending:false}),
+      sb.from('batches').select('*, batch_students(student_id, profiles(full_name))').eq('teacher_id', uid).order('created_at',{ascending:false}),
+      sb.from('trial_requests').select('*, profiles(full_name), batches(name,subject,grade,days,time)').eq('teacher_id', uid).order('created_at',{ascending:false}),
     ]);
     if(error) throw error;
     if(eqErr) throw eqErr;
+    if(bErr) throw bErr;
+    if(trErr) throw trErr;
     myStudents = data.map(e=>({
       enrollmentId:e.id, studentId:e.student_id, name: e.profiles?.full_name || 'Student',
       grade:e.grade || '—', subject:e.subject, feeStatus:e.status, fee:e.fee, schedule:e.schedule,
@@ -1199,6 +1214,16 @@ async function ensureTeacherData(force){
     myEnquiries = enquiries.map(q=>({
       id:q.id, studentId:q.student_id, name: q.profiles?.full_name || 'A parent',
       message:q.message, createdAt:q.created_at,
+    }));
+    myBatches = batches.map(b=>({
+      id:b.id, name:b.name, grade:b.grade||'', subject:b.subject, days:b.days||[], time:b.time||'',
+      description:b.description||'', capacity:b.capacity, status:b.status,
+      students: (b.batch_students||[]).map(bs=>({id:bs.student_id, name:bs.profiles?.full_name||'Student'})),
+    }));
+    myTrialRequests = trials.map(r=>({
+      id:r.id, studentId:r.student_id, studentName: r.profiles?.full_name || 'A student', batchId:r.batch_id,
+      batchName: r.batches?.name || 'Class', subject: r.batches?.subject || '', grade: r.batches?.grade || '',
+      days: (r.batches?.days||[]).join(', '), time: r.batches?.time || '', note:r.note, status:r.status, createdAt:r.created_at,
     }));
     teacherDataStatus = 'ready';
   }catch(err){
@@ -1588,6 +1613,19 @@ function viewTeacherProfile(){
         </div>
 
         <div class="glass" style="padding:28px; margin-top:20px;">
+          <h3 style="font-size:16px; margin-bottom:16px;">Batches</h3>
+          ${t.batches && t.batches.length ? `<div style="display:flex; flex-direction:column; gap:12px;">
+            ${t.batches.map(b=>`
+            <div class="glass" style="padding:16px;">
+              <div style="font-weight:700; font-size:14.5px;">${escapeHtml(b.name)}</div>
+              <div class="muted" style="font-size:12.5px; margin-top:4px;">${escapeHtml(b.subject)}${b.grade?' · '+escapeHtml(b.grade):''} · ${(b.days||[]).join(', ')||'Days TBC'} · ${escapeHtml(b.time)||'Time TBC'}</div>
+              ${b.description ? `<p class="muted" style="font-size:12.5px; margin-top:8px; line-height:1.5;">${escapeHtml(b.description)}</p>` : ''}
+              <button class="btn btn-ghost btn-sm" style="margin-top:12px;" data-action="request-trial" data-batch="${b.id}" data-teacher="${t.id}" data-name="${escapeHtml(t.name)}">🎯 Request trial class</button>
+            </div>`).join('')}
+          </div>` : `<p class="muted" style="font-size:13.5px;">This teacher hasn't published any batches yet.</p>`}
+        </div>
+
+        <div class="glass" style="padding:28px; margin-top:20px;">
           <h3 style="font-size:16px; margin-bottom:16px;">Reviews${t.reviews ? ` (${t.reviews})` : ''}</h3>
           ${reviewsSectionBody()}
         </div>
@@ -1731,9 +1769,28 @@ function viewStudentDashboard(){
               </div>`;}).join('')}
           </div>` : `<p class="muted" style="font-size:13.5px;">No enrollments yet — browse teachers and enroll to get started.</p><button class="btn btn-primary btn-sm" style="margin-top:12px;" data-action="go" data-view="browse">Browse teachers</button>`}
         </div>
+
+        <div class="glass" style="padding:24px; margin-top:20px;">
+          <h3 style="font-size:16px; margin-bottom:16px;">My trial classes</h3>
+          ${myTrialBookings.length ? `<div style="display:flex; flex-direction:column; gap:10px;">
+            ${myTrialBookings.map(r=>`
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:12px; border-radius:12px; background:var(--divider-soft); gap:12px; flex-wrap:wrap;">
+              <div>
+                <div style="font-weight:600; font-size:13.5px;">${escapeHtml(r.batchName)}</div>
+                <div class="muted" style="font-size:12px;">with ${escapeHtml(r.teacherName)} · ${escapeHtml(r.subject)}${r.grade?' · '+escapeHtml(r.grade):''} · ${r.days||'Days TBC'} · ${escapeHtml(r.time)||'Time TBC'}</div>
+              </div>
+              <span class="badge ${r.status==='approved'?'badge-green':r.status==='declined'?'badge-red':'badge-amber'}">${r.status.toUpperCase()}</span>
+            </div>`).join('')}
+          </div>` : `<p class="muted" style="font-size:13px;">No trial class requests yet — visit a teacher's profile and request one from their batches.</p>`}
+        </div>
       </div>
 
       <div>
+        <div class="glass" style="padding:24px; margin-bottom:20px;">
+          <h3 style="font-size:16px; margin-bottom:14px;">My profile</h3>
+          <div class="field" style="margin-bottom:12px;"><label class="field-label">Grade</label><input class="input" id="stGrade" value="${state.profile.grade||''}" placeholder="e.g. Grade 8"/></div>
+          <button class="btn btn-primary btn-sm" data-action="save-student-grade">Save</button>
+        </div>
         <div class="glass" style="padding:24px; margin-bottom:20px;">
           <h3 style="font-size:16px; margin-bottom:16px;">Fee status</h3>
           ${myEnrollments.length ? `<div style="display:flex; flex-direction:column; gap:12px;">
@@ -1824,6 +1881,8 @@ function teacherSidebar(){
   const tabs = [
     {id:'overview', icon:'📊', label:'Overview'},
     {id:'students', icon:'👥', label:'Students'},
+    {id:'batches', icon:'📚', label:'Batches'},
+    {id:'trials', icon:'🎯', label:'Trial requests', count: myTrialRequests.filter(r=>r.status==='pending').length},
     {id:'enquiries', icon:'✉️', label:'Enquiries', count: myEnquiries.length},
     {id:'profile', icon:'⚙️', label:'Profile'},
   ];
@@ -1873,6 +1932,72 @@ function teacherStudents(){
         </tr>`).join('')}
       </tbody>
     </table>` : `<p class="muted" style="font-size:13.5px;">No students enrolled yet. Share your profile link so parents can find you.</p>`}
+  </div>`;
+}
+
+function teacherBatches(){
+  return `
+  <div class="glass" style="padding:22px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+      <h3 style="font-size:15.5px;">My batches</h3>
+      <button class="btn btn-primary btn-sm" data-action="open-batch-modal">+ New batch</button>
+    </div>
+    ${myBatches.length ? `<div style="display:flex; flex-direction:column; gap:12px;">
+      ${myBatches.map(b=>`
+      <div class="glass" style="padding:16px; ${b.status==='inactive'?'opacity:0.6;':''}">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+          <div>
+            <div style="font-weight:700; font-size:14.5px;">${escapeHtml(b.name)} ${b.status==='inactive'?'<span class="badge" style="margin-left:6px;">Inactive</span>':''}</div>
+            <div class="muted" style="font-size:12.5px; margin-top:4px;">${escapeHtml(b.subject)}${b.grade?' · '+escapeHtml(b.grade):''} · ${(b.days||[]).join(', ')||'Days TBC'} · ${escapeHtml(b.time)||'Time TBC'}</div>
+            ${b.description ? `<p class="muted" style="font-size:12.5px; margin-top:6px; line-height:1.5;">${escapeHtml(b.description)}</p>` : ''}
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <span class="badge badge-blue">${b.students.length}${b.capacity?'/'+b.capacity:''} student${b.students.length!==1?'s':''}</span>
+          </div>
+        </div>
+        <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;">
+          <button class="btn btn-ghost btn-sm" data-action="open-batch-students" data-id="${b.id}">👥 Manage students</button>
+          <button class="btn btn-ghost btn-sm" data-action="open-batch-modal" data-id="${b.id}">✏️ Edit</button>
+          <button class="btn btn-ghost btn-sm" data-action="delete-batch" data-id="${b.id}" data-name="${escapeHtml(b.name)}">🗑️ Delete</button>
+        </div>
+      </div>`).join('')}
+    </div>` : `<p class="muted" style="font-size:13.5px;">No batches yet. Create one to organize students by grade, subject, and timing — students will see it on your profile and can request a trial class.</p>`}
+  </div>`;
+}
+
+function teacherTrials(){
+  const pending = myTrialRequests.filter(r=>r.status==='pending');
+  const resolved = myTrialRequests.filter(r=>r.status!=='pending');
+  return `
+  <div class="glass" style="padding:22px;">
+    <h3 style="font-size:15.5px; margin-bottom:16px;">Trial class requests</h3>
+    ${pending.length ? `<div style="display:flex; flex-direction:column; gap:12px; margin-bottom:${resolved.length?'22px':'0'};">
+      ${pending.map(r=>`
+      <div class="glass" style="padding:16px;">
+        <div style="display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap;">
+          <div style="font-weight:700; font-size:14.5px;">${escapeHtml(r.studentName)}</div>
+          <span class="badge badge-amber">PENDING</span>
+        </div>
+        <div class="muted" style="font-size:12.5px; margin-top:6px;">Wants a trial for <b style="color:var(--text)">${escapeHtml(r.batchName)}</b> — ${escapeHtml(r.subject)}${r.grade?' · '+escapeHtml(r.grade):''} · ${r.days||'Days TBC'} · ${escapeHtml(r.time)||'Time TBC'}</div>
+        ${r.note ? `<p class="muted" style="font-size:13px; margin-top:8px; line-height:1.5;">"${escapeHtml(r.note)}"</p>` : ''}
+        <div style="display:flex; gap:8px; margin-top:12px;">
+          <button class="btn btn-primary btn-sm" data-action="trial-respond" data-id="${r.id}" data-status="approved">✅ Approve</button>
+          <button class="btn btn-ghost btn-sm" data-action="trial-respond" data-id="${r.id}" data-status="declined">✖️ Decline</button>
+          <button class="btn btn-ghost btn-sm" data-action="open-chat" data-teacher="${state.session.user.id}" data-student="${r.studentId}" data-name="${escapeHtml(r.studentName)}">💬 Chat</button>
+        </div>
+      </div>`).join('')}
+    </div>` : ''}
+    ${resolved.length ? `<div style="display:flex; flex-direction:column; gap:10px;">
+      ${resolved.map(r=>`
+      <div style="display:flex; justify-content:space-between; align-items:center; padding:12px; border-radius:12px; background:var(--divider-soft);">
+        <div>
+          <div style="font-weight:600; font-size:13.5px;">${escapeHtml(r.studentName)}</div>
+          <div class="muted" style="font-size:12px;">${escapeHtml(r.batchName)} · ${escapeHtml(r.subject)}</div>
+        </div>
+        <span class="badge ${r.status==='approved'?'badge-green':'badge-red'}">${r.status.toUpperCase()}</span>
+      </div>`).join('')}
+    </div>` : ''}
+    ${!pending.length && !resolved.length ? `<p class="muted" style="font-size:13.5px;">No trial requests yet. When a student requests a trial class from your profile, it'll show up here for you to approve or decline.</p>` : ''}
   </div>`;
 }
 
@@ -1990,7 +2115,7 @@ function viewTeacherDashboard(){
   if(teacherDataStatus!=='ready'){
     return `${navbar()}${teacherDataStatus==='error' ? errorScreen('dashboard') : loadingScreen('your dashboard')}`;
   }
-  const tabMap = {overview:teacherOverview, students:teacherStudents, enquiries:teacherEnquiries, profile:teacherProfileEdit};
+  const tabMap = {overview:teacherOverview, students:teacherStudents, batches:teacherBatches, trials:teacherTrials, enquiries:teacherEnquiries, profile:teacherProfileEdit};
   return `
   ${navbar()}
   <div class="wrap view-transition" style="padding-top:32px;">
@@ -2476,6 +2601,36 @@ function subscribeSessionRealtime(){
       const otherId = role==='teacher' ? m.student_id : m.teacher_id;
       const openOtherId = role==='teacher' ? chatStudentId : chatTeacherId;
       if(chatWidgetOpen && chatWidgetView==='thread' && otherId===openOtherId) renderChatMessagesList();
+    })
+    .on('postgres_changes', { event:'INSERT', schema:'public', table:'trial_requests', filter:`teacher_id=eq.${uid}` }, (payload)=>{
+      // Only relevant for teachers — a student just requested a trial spot.
+      if(role!=='teacher') return;
+      const r = payload.new;
+      sb.from('trial_requests').select('*, profiles(full_name), batches(name,subject,grade,days,time)').eq('id', r.id).single().then(({data})=>{
+        if(!data) return;
+        const entry = {
+          id:data.id, studentId:data.student_id, studentName: data.profiles?.full_name || 'A student', batchId:data.batch_id,
+          batchName: data.batches?.name || 'Class', subject: data.batches?.subject || '', grade: data.batches?.grade || '',
+          days: (data.batches?.days||[]).join(', '), time: data.batches?.time || '', note:data.note, status:data.status, createdAt:data.created_at,
+        };
+        if(!myTrialRequests.some(x=>x.id===entry.id)) myTrialRequests.unshift(entry);
+        toast('🎯 ' + escapeHtml(entry.studentName) + ' requested a trial for ' + escapeHtml(entry.batchName), 'ok', ()=>{
+          state.teacherTab = 'trials';
+          nav('teacherDashboard');
+        });
+        if(state.view==='teacherDashboard' && state.teacherTab==='trials') render();
+      });
+    })
+    .on('postgres_changes', { event:'UPDATE', schema:'public', table:'trial_requests', filter:`student_id=eq.${uid}` }, (payload)=>{
+      // Only relevant for students — the teacher just approved/declined their request.
+      if(role!=='student') return;
+      const r = payload.new;
+      const entry = myTrialBookings.find(x=>x.id===r.id);
+      if(entry){
+        entry.status = r.status;
+        toast(r.status==='approved' ? '✅ Your trial class was approved!' : (r.status==='declined' ? 'Your trial class request was declined' : 'Trial request updated'), r.status==='approved'?'ok':'info');
+        if(state.view==='studentDashboard') render();
+      }
     })
     .subscribe();
 }
@@ -3053,6 +3208,85 @@ function chatBubbleInnerHTML(){
   return `💬${unread ? `<span class="chat-bubble-badge">${unread>9?'9+':unread}</span>` : ''}`;
 }
 
+function batchModal(batchId){
+  const b = batchId ? myBatches.find(x=>x.id===batchId) : null;
+  const selectedDays = b ? (b.days||[]) : [];
+  return `<div class="glass modal">
+    <h3 style="font-size:18px; margin-bottom:18px;">${b ? 'Edit batch' : 'New batch'}</h3>
+    <div class="field"><label class="field-label">Batch name</label><input class="input" id="bmName" value="${b?b.name:''}" placeholder="Weekday Algebra — Grade 8"/></div>
+    <div class="grid-2" style="gap:12px;">
+      <div class="field"><label class="field-label">Grade</label><input class="input" id="bmGrade" value="${b?b.grade:''}" placeholder="Grade 8"/></div>
+      <div class="field"><label class="field-label">Subject</label><input class="input" id="bmSubject" value="${b?b.subject:''}" placeholder="Mathematics"/></div>
+    </div>
+    <div class="field">
+      <label class="field-label">Days of the week</label>
+      <input type="hidden" id="bmDays" value="${selectedDays.join(',')}"/>
+      <div id="bmDayPicker" style="display:flex; gap:6px; flex-wrap:wrap;">
+        ${WEEKDAYS.map(d=>`<span data-day="${d}" onclick="
+          const inp=document.getElementById('bmDays'); let days=inp.value?inp.value.split(','):[];
+          if(days.includes('${d}')){ days=days.filter(x=>x!=='${d}'); this.style.background=''; this.style.color=''; this.style.borderColor='var(--glass-border)'; }
+          else{ days.push('${d}'); this.style.background='var(--primary)'; this.style.color='#fff'; this.style.borderColor='var(--primary)'; }
+          inp.value=days.join(',');
+        " style="cursor:pointer; padding:7px 12px; border-radius:10px; border:1px solid var(--glass-border); font-size:12.5px; font-weight:600; ${selectedDays.includes(d)?'background:var(--primary); color:#fff; border-color:var(--primary);':''}">${d}</span>`).join('')}
+      </div>
+    </div>
+    <div class="grid-2" style="gap:12px;">
+      <div class="field"><label class="field-label">Time</label><input class="input" id="bmTime" value="${b?b.time:''}" placeholder="4:00–5:00 PM"/></div>
+      <div class="field"><label class="field-label">Capacity (optional)</label><input class="input" id="bmCapacity" type="number" min="1" value="${b&&b.capacity!=null?b.capacity:''}" placeholder="Unlimited"/></div>
+    </div>
+    <div class="field"><label class="field-label">Description</label><textarea class="input" id="bmDescription" rows="3" placeholder="What this batch covers, pace, expectations...">${b?escapeHtml(b.description):''}</textarea></div>
+    <div class="field"><label class="field-label">Status</label>
+      <select class="input" id="bmStatus">
+        <option value="active" ${!b||b.status==='active'?'selected':''}>Active — visible to students</option>
+        <option value="inactive" ${b&&b.status==='inactive'?'selected':''}>Inactive — hidden from students</option>
+      </select>
+    </div>
+    <div style="display:flex; gap:10px; margin-top:6px;">
+      <button class="btn btn-ghost btn-block" data-action="close-modal">Cancel</button>
+      <button class="btn btn-primary btn-block" data-action="save-batch" data-id="${b?b.id:''}">${b?'Save changes':'Create batch'}</button>
+    </div>
+  </div>`;
+}
+
+function batchStudentsModal(batchId){
+  const b = myBatches.find(x=>x.id===batchId);
+  if(!b) return '';
+  const inBatch = new Set(b.students.map(s=>s.id));
+  const seen = new Set();
+  const roster = myStudents.filter(s=>{ if(seen.has(s.studentId)) return false; seen.add(s.studentId); return true; });
+  return `<div class="glass modal">
+    <h3 style="font-size:18px; margin-bottom:4px;">Manage students — ${escapeHtml(b.name)}</h3>
+    <p class="muted" style="font-size:13px; margin-bottom:16px;">Add or remove students already enrolled with you.</p>
+    <div style="max-height:320px; overflow-y:auto; display:flex; flex-direction:column; gap:8px;">
+      ${roster.length ? roster.map(s=>`
+        <label style="display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:10px; background:var(--divider-soft); cursor:pointer;">
+          <input type="checkbox" class="bsStudentCheck" value="${s.studentId}" ${inBatch.has(s.studentId)?'checked':''} style="width:16px; height:16px;"/>
+          <span style="font-size:13.5px; font-weight:600;">${escapeHtml(s.name)}</span>
+          <span class="muted" style="font-size:12px;">${escapeHtml(s.subject)}</span>
+        </label>`).join('') : `<p class="muted" style="font-size:13px;">No enrolled students yet — students need to enroll with you before you can add them to a batch.</p>`}
+    </div>
+    <div style="display:flex; gap:10px; margin-top:16px;">
+      <button class="btn btn-ghost btn-block" data-action="close-modal">Cancel</button>
+      <button class="btn btn-primary btn-block" data-action="save-batch-students" data-id="${b.id}">Save</button>
+    </div>
+  </div>`;
+}
+
+function trialRequestModal(batchId, teacherId, teacherName){
+  const t = TEACHERS.find(x=>x.id===teacherId);
+  const b = t?.batches.find(x=>x.id===batchId);
+  if(!b) return '';
+  return `<div class="glass modal">
+    <h3 style="font-size:18px; margin-bottom:4px;">Request a trial class</h3>
+    <p class="muted" style="font-size:13px; margin-bottom:18px;">${escapeHtml(b.name)} with ${escapeHtml(teacherName)} — ${escapeHtml(b.subject)}${b.grade?' · '+escapeHtml(b.grade):''} · ${(b.days||[]).join(', ')||'Days TBC'} · ${escapeHtml(b.time)||'Time TBC'}</p>
+    <div class="field"><label class="field-label">Note to the teacher (optional)</label><textarea class="input" id="trNote" rows="3" placeholder="Anything the teacher should know before your trial..."></textarea></div>
+    <div style="display:flex; gap:10px; margin-top:6px;">
+      <button class="btn btn-ghost btn-block" data-action="close-modal">Cancel</button>
+      <button class="btn btn-primary btn-block" data-action="submit-trial-request" data-batch="${batchId}" data-teacher="${teacherId}" data-name="${escapeHtml(teacherName)}">Send request</button>
+    </div>
+  </div>`;
+}
+
 function reviewModal(enrollmentId){
   const e = myEnrollments.find(x=>x.id===enrollmentId);
   const existing = myReviews.find(r=>r.enrollment_id===enrollmentId);
@@ -3486,6 +3720,112 @@ document.addEventListener('click', (e)=>{
         toast('✅ Enrolled with ' + t.name + '!', 'ok');
         studentDataStatus = 'idle';
         nav('studentDashboard');
+      }).finally(()=>setBtnLoading(el, false));
+      break;
+    }
+    case 'request-trial': {
+      if(!state.session || state.profile?.role!=='student'){
+        captureAuthRedirect();
+        toast('Please log in as a parent/student first', 'warn');
+        nav('studentAuth');
+        return;
+      }
+      openModal(trialRequestModal(parseInt(el.dataset.batch), el.dataset.teacher, el.dataset.name));
+      break;
+    }
+    case 'submit-trial-request': {
+      const batchId = parseInt(el.dataset.batch), teacherId = el.dataset.teacher, teacherName = el.dataset.name;
+      const note = document.getElementById('trNote').value.trim();
+      setBtnLoading(el, true);
+      sb.from('trial_requests').insert({
+        batch_id: batchId, teacher_id: teacherId, student_id: state.session.user.id, note,
+      }).then(({error})=>{
+        if(error){ toast('❌ ' + error.message, 'err'); return; }
+        closeModal();
+        toast('🎯 Trial request sent to ' + teacherName + ' — they\'ll confirm your spot soon.', 'ok');
+        studentDataStatus = 'idle';
+      }).finally(()=>setBtnLoading(el, false));
+      break;
+    }
+    case 'save-student-grade': {
+      const grade = document.getElementById('stGrade').value.trim();
+      setBtnLoading(el, true);
+      sb.from('profiles').update({ grade }).eq('id', state.session.user.id).then(({error})=>{
+        if(error){ toast('❌ ' + error.message, 'err'); return; }
+        state.profile.grade = grade;
+        toast('✅ Grade saved', 'ok');
+      }).finally(()=>setBtnLoading(el, false));
+      break;
+    }
+    case 'open-batch-modal':
+      openModal(batchModal(el.dataset.id ? parseInt(el.dataset.id) : null));
+      break;
+    case 'save-batch': {
+      const uid = state.session.user.id;
+      const idRaw = el.dataset.id;
+      const name = document.getElementById('bmName').value.trim();
+      const grade = document.getElementById('bmGrade').value.trim();
+      const subject = document.getElementById('bmSubject').value.trim();
+      const daysVal = document.getElementById('bmDays').value;
+      const days = daysVal ? daysVal.split(',') : [];
+      const time = document.getElementById('bmTime').value.trim();
+      const capacityRaw = document.getElementById('bmCapacity').value;
+      const capacity = capacityRaw ? parseInt(capacityRaw) : null;
+      const description = document.getElementById('bmDescription').value.trim();
+      const status = document.getElementById('bmStatus').value;
+      if(!name || !subject){ toast('Please fill in at least a name and subject', 'warn'); return; }
+      const payload = { teacher_id: uid, name, grade, subject, days, time, capacity, description, status };
+      setBtnLoading(el, true);
+      (idRaw
+        ? sb.from('batches').update(payload).eq('id', parseInt(idRaw))
+        : sb.from('batches').insert(payload)
+      ).then(({error})=>{
+        if(error){ toast('❌ ' + error.message, 'err'); return; }
+        closeModal();
+        toast(idRaw ? '✅ Batch updated' : '✅ Batch created', 'ok');
+        ensureTeacherData(true);
+        ensureTeachers(true);
+      }).finally(()=>setBtnLoading(el, false));
+      break;
+    }
+    case 'delete-batch': {
+      const id = parseInt(el.dataset.id);
+      setBtnLoading(el, true);
+      sb.from('batches').delete().eq('id', id).then(({error})=>{
+        if(error){ toast('❌ ' + error.message, 'err'); return; }
+        toast('🗑️ "' + el.dataset.name + '" deleted', 'ok');
+        ensureTeacherData(true);
+        ensureTeachers(true);
+      }).finally(()=>setBtnLoading(el, false));
+      break;
+    }
+    case 'open-batch-students':
+      openModal(batchStudentsModal(parseInt(el.dataset.id)));
+      break;
+    case 'save-batch-students': {
+      const batchId = parseInt(el.dataset.id);
+      const b = myBatches.find(x=>x.id===batchId);
+      const checked = new Set(Array.from(document.querySelectorAll('.bsStudentCheck:checked')).map(c=>c.value));
+      const was = new Set(b.students.map(s=>s.id));
+      const toAdd = [...checked].filter(id=>!was.has(id));
+      const toRemove = [...was].filter(id=>!checked.has(id));
+      setBtnLoading(el, true);
+      (async ()=>{
+        if(toAdd.length) await sb.from('batch_students').insert(toAdd.map(student_id=>({ batch_id: batchId, student_id })));
+        if(toRemove.length) await sb.from('batch_students').delete().eq('batch_id', batchId).in('student_id', toRemove);
+        closeModal();
+        toast('✅ Batch roster updated', 'ok');
+        ensureTeacherData(true);
+      })().finally(()=>setBtnLoading(el, false));
+      break;
+    }
+    case 'trial-respond': {
+      const id = parseInt(el.dataset.id), status = el.dataset.status;
+      setBtnLoading(el, true);
+      sb.from('trial_requests').update({ status, responded_at: new Date().toISOString() }).eq('id', id).then(({error})=>{
+        if(error){ toast('❌ ' + error.message, 'err'); return; }
+        toast(status==='approved' ? '✅ Trial approved' : 'Trial declined', status==='approved'?'ok':'info');
+        ensureTeacherData(true);
       }).finally(()=>setBtnLoading(el, false));
       break;
     }

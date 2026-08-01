@@ -6,6 +6,7 @@ create table profiles (
   id uuid primary key references auth.users(id) on delete cascade,
   role text not null check (role in ('student','teacher','admin')),
   full_name text not null,
+  grade text,  -- a student's own grade/class (e.g. "Grade 8"), set from their dashboard; unused for teachers/admins
   created_at timestamptz not null default now(),
   last_seen_at timestamptz  -- stamped by the client every so often while the app is open; used to show "Online" (via Realtime Presence) or "Last seen …" in chat
 );
@@ -105,7 +106,52 @@ create table messages (
   created_at timestamptz not null default now()
 );
 
--- 9) site_settings: a small key/value store for site-wide toggles.
+-- 9) batches: a teacher's structured, recurring class — grade, subject,
+-- days of the week, a time slot, an optional capacity, and a description.
+-- This is the structured counterpart to the free-text "weekly schedule"
+-- a teacher can also set on their profile (schedule_slots): batches are
+-- what a teacher actually assigns students to (via batch_students) and
+-- what students see and can request a trial class for on a teacher's
+-- public profile.
+create table batches (
+  id bigserial primary key,
+  teacher_id uuid not null references teacher_profiles(profile_id) on delete cascade,
+  name text not null,
+  grade text default '',
+  subject text not null,
+  days text[] not null default '{}',
+  time text default '',
+  description text default '',
+  capacity int,
+  status text not null default 'active' check (status in ('active','inactive')),
+  created_at timestamptz not null default now()
+);
+
+-- 10) batch_students: which students a teacher has placed into which batch.
+create table batch_students (
+  id bigserial primary key,
+  batch_id bigint not null references batches(id) on delete cascade,
+  student_id uuid not null references profiles(id) on delete cascade,
+  added_at timestamptz not null default now(),
+  unique(batch_id, student_id)
+);
+
+-- 11) trial_requests: a student's request for a spot in a trial class for
+-- a specific batch. Created by the student (pending), then approved or
+-- declined by the teacher from their dashboard — both sides see the
+-- status change live via Realtime.
+create table trial_requests (
+  id bigserial primary key,
+  batch_id bigint not null references batches(id) on delete cascade,
+  teacher_id uuid not null references teacher_profiles(profile_id) on delete cascade,
+  student_id uuid not null references profiles(id) on delete cascade,
+  note text default '',
+  status text not null default 'pending' check (status in ('pending','approved','declined')),
+  created_at timestamptz not null default now(),
+  responded_at timestamptz
+);
+
+-- 12) site_settings: a small key/value store for site-wide toggles.
 -- Currently holds one row (key='maintenance', value={"enabled":bool}) that
 -- every visitor's page checks before rendering anything else. Publicly
 -- readable (any visitor needs to check it) but only an admin can change
@@ -131,6 +177,9 @@ alter table enrollments enable row level security;
 alter table payments enable row level security;
 alter table reviews enable row level security;
 alter table messages enable row level security;
+alter table batches enable row level security;
+alter table batch_students enable row level security;
+alter table trial_requests enable row level security;
 
 -- profiles: names are shown publicly (e.g. "with Ritu Sharma"), but only
 -- the owner can create/change their own row.
@@ -241,6 +290,46 @@ begin
     where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'messages'
   ) then
     alter publication supabase_realtime add table messages;
+  end if;
+end $$;
+
+-- batches: the whole point is to be visible on a teacher's public
+-- profile, but only the owning teacher can create/edit/delete their own.
+create policy "batches are publicly readable" on batches for select using (true);
+create policy "teachers manage their own batches" on batches for all using (auth.uid() = teacher_id) with check (auth.uid() = teacher_id);
+
+-- batch_students: visible to the teacher who owns the batch and to the
+-- student placed in it; only the owning teacher can add or remove a student.
+create policy "batch roster visible to teacher or student" on batch_students for select using (
+  student_id = auth.uid() or exists(select 1 from batches b where b.id = batch_id and b.teacher_id = auth.uid())
+);
+create policy "teachers add students to their own batches" on batch_students for insert with check (
+  exists(select 1 from batches b where b.id = batch_id and b.teacher_id = auth.uid())
+);
+create policy "teachers remove students from their own batches" on batch_students for delete using (
+  exists(select 1 from batches b where b.id = batch_id and b.teacher_id = auth.uid())
+);
+
+-- trial_requests: visible to the student who asked and the teacher who
+-- received it. A student can only ever create a request as themselves;
+-- only the teacher on the request can update its status (approve/decline).
+create policy "trial request visible to student or teacher" on trial_requests for select using (auth.uid() = student_id or auth.uid() = teacher_id);
+create policy "students can request a trial" on trial_requests for insert with check (auth.uid() = student_id);
+create policy "teacher can respond to a trial request" on trial_requests for update using (auth.uid() = teacher_id);
+
+-- ---------------------------------------------------------------
+-- Realtime: stream new/updated `trial_requests` rows, so a teacher sees a
+-- new trial request appear the instant a student sends one, and a student
+-- sees the approve/decline the instant their teacher responds — both
+-- without refreshing.
+-- ---------------------------------------------------------------
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'trial_requests'
+  ) then
+    alter publication supabase_realtime add table trial_requests;
   end if;
 end $$;
 
@@ -423,6 +512,81 @@ grant execute on function mark_messages_read(uuid) to authenticated;
 -- create policy "admins can view all enquiries" on enquiries for select using (is_admin());
 -- drop policy if exists "admins can delete any review" on reviews;
 -- create policy "admins can delete any review" on reviews for delete using (is_admin());
+
+-- ---------------------------------------------------------------
+-- MIGRATION: adds student grades, proper batches (grade/subject/days/time/
+-- description, with a student roster), and the trial-class request system
+-- (a student requests a spot, the teacher approves/declines, both sides
+-- see it live). Safe to re-run.
+-- ---------------------------------------------------------------
+-- alter table profiles add column if not exists grade text;
+--
+-- create table if not exists batches (
+--   id bigserial primary key,
+--   teacher_id uuid not null references teacher_profiles(profile_id) on delete cascade,
+--   name text not null,
+--   grade text default '',
+--   subject text not null,
+--   days text[] not null default '{}',
+--   time text default '',
+--   description text default '',
+--   capacity int,
+--   status text not null default 'active' check (status in ('active','inactive')),
+--   created_at timestamptz not null default now()
+-- );
+-- alter table batches enable row level security;
+-- drop policy if exists "batches are publicly readable" on batches;
+-- create policy "batches are publicly readable" on batches for select using (true);
+-- drop policy if exists "teachers manage their own batches" on batches;
+-- create policy "teachers manage their own batches" on batches for all using (auth.uid() = teacher_id) with check (auth.uid() = teacher_id);
+--
+-- create table if not exists batch_students (
+--   id bigserial primary key,
+--   batch_id bigint not null references batches(id) on delete cascade,
+--   student_id uuid not null references profiles(id) on delete cascade,
+--   added_at timestamptz not null default now(),
+--   unique(batch_id, student_id)
+-- );
+-- alter table batch_students enable row level security;
+-- drop policy if exists "batch roster visible to teacher or student" on batch_students;
+-- create policy "batch roster visible to teacher or student" on batch_students for select using (
+--   student_id = auth.uid() or exists(select 1 from batches b where b.id = batch_id and b.teacher_id = auth.uid())
+-- );
+-- drop policy if exists "teachers add students to their own batches" on batch_students;
+-- create policy "teachers add students to their own batches" on batch_students for insert with check (
+--   exists(select 1 from batches b where b.id = batch_id and b.teacher_id = auth.uid())
+-- );
+-- drop policy if exists "teachers remove students from their own batches" on batch_students;
+-- create policy "teachers remove students from their own batches" on batch_students for delete using (
+--   exists(select 1 from batches b where b.id = batch_id and b.teacher_id = auth.uid())
+-- );
+--
+-- create table if not exists trial_requests (
+--   id bigserial primary key,
+--   batch_id bigint not null references batches(id) on delete cascade,
+--   teacher_id uuid not null references teacher_profiles(profile_id) on delete cascade,
+--   student_id uuid not null references profiles(id) on delete cascade,
+--   note text default '',
+--   status text not null default 'pending' check (status in ('pending','approved','declined')),
+--   created_at timestamptz not null default now(),
+--   responded_at timestamptz
+-- );
+-- alter table trial_requests enable row level security;
+-- drop policy if exists "trial request visible to student or teacher" on trial_requests;
+-- create policy "trial request visible to student or teacher" on trial_requests for select using (auth.uid() = student_id or auth.uid() = teacher_id);
+-- drop policy if exists "students can request a trial" on trial_requests;
+-- create policy "students can request a trial" on trial_requests for insert with check (auth.uid() = student_id);
+-- drop policy if exists "teacher can respond to a trial request" on trial_requests;
+-- create policy "teacher can respond to a trial request" on trial_requests for update using (auth.uid() = teacher_id);
+-- do $$
+-- begin
+--   if not exists (
+--     select 1 from pg_publication_tables
+--     where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'trial_requests'
+--   ) then
+--     alter publication supabase_realtime add table trial_requests;
+--   end if;
+-- end $$;
 
 -- ---------------------------------------------------------------
 -- email_exists: lets the "Forgot password" screen tell someone whether
