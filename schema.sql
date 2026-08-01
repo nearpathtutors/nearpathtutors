@@ -6,7 +6,8 @@ create table profiles (
   id uuid primary key references auth.users(id) on delete cascade,
   role text not null check (role in ('student','teacher','admin')),
   full_name text not null,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  last_seen_at timestamptz  -- stamped by the client every so often while the app is open; used to show "Online" (via Realtime Presence) or "Last seen …" in chat
 );
 
 -- 2) teacher_profiles: the public listing data for a teacher
@@ -272,6 +273,14 @@ for each row execute function update_teacher_rating();
 --     alter publication supabase_realtime add table messages;
 --   end if;
 -- end $$;
+
+-- ---------------------------------------------------------------
+-- MIGRATION: adds typing indicators and online/last-seen status to chat
+-- (just one column — "online" itself is Realtime Presence, which needs
+-- no schema; typing indicators are Realtime Broadcast, which needs no
+-- schema either). Safe to re-run.
+-- ---------------------------------------------------------------
+-- alter table profiles add column if not exists last_seen_at timestamptz;
 
 -- ---------------------------------------------------------------
 -- email_exists: lets the "Forgot password" screen tell someone whether
