@@ -507,7 +507,51 @@ let ADMIN_TEACHERS = [];    // every teacher profile, for the admin panel
 let ADMIN_STUDENTS = [];    // every student profile, for the admin panel
 let adminDataStatus = 'idle'; // idle | loading | ready | error
 
-function nav(view, extra){
+/* =========================================================
+   ROUTING — gives every view a real URL (via the hash, so it
+   still works on a static host like GitHub Pages with no
+   server-side rewrites needed). This means:
+   - Refreshing the page reopens the same screen instead of
+     bouncing back to the homepage.
+   - Chrome's back/forward buttons move between screens.
+   - Links can be shared/bookmarked to a specific page.
+========================================================= */
+const VIEW_ROUTES = {
+  home: '/', browse: '/browse',
+  studentAuth: '/parents/login', studentDashboard: '/parents/dashboard',
+  teacherHome: '/teachers', teacherAuth: '/teachers/login',
+  teacherDashboard: '/teachers/dashboard', teacherOnboarding: '/teachers/onboarding',
+  adminAuth: '/admin/login', adminDashboard: '/admin/dashboard',
+};
+let ignoreNextHashChange = false;
+
+function hashForView(view, st){
+  if(view==='teacherProfile') return '#/teacher/' + encodeURIComponent(st.selectedTeacherId || '');
+  return '#' + (VIEW_ROUTES[view] || '/');
+}
+function viewFromHash(hash){
+  const path = (hash||'').replace(/^#/, '') || '/';
+  if(path.startsWith('/teacher/')){
+    return { view:'teacherProfile', selectedTeacherId: decodeURIComponent(path.slice('/teacher/'.length)) };
+  }
+  const found = Object.keys(VIEW_ROUTES).find(k => VIEW_ROUTES[k]===path);
+  return { view: found || 'home' };
+}
+function setHash(view, st){
+  const target = hashForView(view, st);
+  if(location.hash === target) return;
+  ignoreNextHashChange = true;
+  location.hash = target;
+}
+// Fires on the browser's back/forward buttons, and on any manual hash edit.
+window.addEventListener('hashchange', ()=>{
+  if(ignoreNextHashChange){ ignoreNextHashChange = false; return; }
+  const parsed = viewFromHash(location.hash);
+  const extra = parsed.selectedTeacherId ? {selectedTeacherId: parsed.selectedTeacherId, selectedTeacherFrom:'home'} : null;
+  nav(parsed.view, extra, {fromHash:true});
+});
+
+function nav(view, extra, opts){
   state.view = view;
   if(extra) Object.assign(state, extra);
   window.scrollTo({top:0, behavior:'smooth'});
@@ -516,6 +560,7 @@ function nav(view, extra){
   if(view==='studentDashboard') ensureStudentData();
   if(view==='teacherDashboard') ensureTeacherData();
   if(view==='adminDashboard') ensureAdminData();
+  if(!opts || !opts.fromHash) setHash(view, state);
   render();
 }
 
@@ -769,7 +814,19 @@ async function boot(){
   // support ?teacher=<id> deep links (e.g. shared from a teacher's dashboard)
   const params = new URLSearchParams(location.search);
   const sharedTeacher = params.get('teacher');
-  if(sharedTeacher){ state.view = 'teacherProfile'; state.selectedTeacherId = sharedTeacher; state.selectedTeacherFrom = 'home'; }
+  if(sharedTeacher){
+    state.view = 'teacherProfile'; state.selectedTeacherId = sharedTeacher; state.selectedTeacherFrom = 'home';
+    setHash('teacherProfile', state);
+  }else if(location.hash){
+    // restores whichever screen was open before a refresh, and is also
+    // what a shared/bookmarked link like #/teacher/<id> opens directly to
+    const parsed = viewFromHash(location.hash);
+    state.view = parsed.view;
+    if(parsed.selectedTeacherId){ state.selectedTeacherId = parsed.selectedTeacherId; state.selectedTeacherFrom = 'home'; }
+  }else{
+    // no hash yet on first-ever visit — write one so refresh/back stay in sync from here on
+    setHash(state.view, state);
+  }
 
   ensureTeachers();
   render();
