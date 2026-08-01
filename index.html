@@ -3165,19 +3165,41 @@ document.addEventListener('click', (e)=>{
       break;
     case 'send-enquiry': {
       const msg = document.getElementById('enquiryMsg').value;
+      const teacherId = el.dataset.id, teacherName = el.dataset.name, studentId = state.session.user.id;
       setBtnLoading(el, true);
-      sb.from('enquiries').insert({ teacher_id: el.dataset.id, student_id: state.session.user.id, message: msg })
-        .then(({error})=>{
-          if(error){ toast('❌ ' + error.message, 'err'); return; }
-          closeModal();
-          toast('✅ Enquiry sent to ' + el.dataset.name + '!', 'ok');
-          // Surface this teacher in the chat inbox right away, rather than
-          // waiting for the next full conversations refresh.
-          if(!myConversations.some(c=>c.id===el.dataset.id)){
-            myConversations.unshift({ id:el.dataset.id, name:el.dataset.name, lastMessage:null, lastAt:null, lastMine:false, unread:false, typing:false });
-            renderChatDock();
-          }
-        }).finally(()=>setBtnLoading(el, false));
+      (async () => {
+        const { error } = await sb.from('enquiries').insert({ teacher_id: teacherId, student_id: studentId, message: msg });
+        if(error){ toast('❌ ' + error.message, 'err'); setBtnLoading(el, false); return; }
+        closeModal();
+        toast('✅ Enquiry sent to ' + teacherName + '!', 'ok');
+
+        // Only the first-ever contact with this teacher also gets posted as
+        // a real chat message — if a thread already exists, the enquiry
+        // still gets logged in the teacher's Enquiries tab, but doesn't
+        // duplicate itself into an already-ongoing conversation.
+        const { count } = await sb.from('messages')
+          .select('id', { count:'exact', head:true })
+          .eq('teacher_id', teacherId).eq('student_id', studentId);
+        const isFirstContact = !count;
+        if(isFirstContact){
+          await sb.from('messages').insert({ teacher_id: teacherId, student_id: studentId, sender_id: studentId, body: msg });
+        }
+
+        // Surface this teacher (and the message, if it's new) in the chat
+        // inbox right away, rather than waiting for the next full refresh.
+        const existing = myConversations.find(c=>c.id===teacherId);
+        if(existing){
+          if(isFirstContact){ existing.lastMessage = msg; existing.lastAt = new Date().toISOString(); existing.lastMine = true; }
+        }else{
+          myConversations.unshift({
+            id:teacherId, name:teacherName,
+            lastMessage: isFirstContact ? msg : null, lastAt: isFirstContact ? new Date().toISOString() : null,
+            lastMine: isFirstContact, unread:false, typing:false,
+          });
+        }
+        renderChatDock();
+        setBtnLoading(el, false);
+      })();
       break;
     }
     case 'enroll-now': {
