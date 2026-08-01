@@ -524,15 +524,35 @@ const VIEW_ROUTES = {
   adminAuth: '/admin/login', adminDashboard: '/admin/dashboard',
 };
 let ignoreNextHashChange = false;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function slugify(str){
+  return (str||'').toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/(^-+|-+$)/g,'');
+}
+// Same-named teachers get numbered in a stable order (by id) so the same
+// teacher always resolves to the same number, regardless of query order.
+function teachersWithSlug(slug){
+  return TEACHERS.filter(t => slugify(t.name)===slug).sort((a,b)=> a.id.localeCompare(b.id));
+}
 
 function hashForView(view, st){
-  if(view==='teacherProfile') return '#/teacher/' + encodeURIComponent(st.selectedTeacherId || '');
+  if(view==='teacherProfile'){
+    const t = TEACHERS.find(x => x.id === st.selectedTeacherId);
+    if(!t) return '#/teacher/' + encodeURIComponent(st.selectedTeacherId || ''); // teacher list not loaded yet
+    const slug = slugify(t.name) || 'teacher';
+    const dupes = teachersWithSlug(slug);
+    if(dupes.length <= 1) return '#/teacher/' + encodeURIComponent(slug);
+    const idx = dupes.findIndex(x=>x.id===t.id) + 1;
+    return '#/teacher/' + encodeURIComponent(slug) + '/' + idx;
+  }
   return '#' + (VIEW_ROUTES[view] || '/');
 }
 function viewFromHash(hash){
   const path = (hash||'').replace(/^#/, '') || '/';
   if(path.startsWith('/teacher/')){
-    return { view:'teacherProfile', selectedTeacherId: decodeURIComponent(path.slice('/teacher/'.length)) };
+    // may be a full uuid (older links), "ritu-sharma", or "ritu-sharma/2"
+    // — resolved once the teacher list has loaded, see resolvePendingTeacherSlug()
+    return { view:'teacherProfile', selectedTeacherId: decodeURIComponent(path.slice('/teacher/'.length).replace(/\/$/,'')) };
   }
   const found = Object.keys(VIEW_ROUTES).find(k => VIEW_ROUTES[k]===path);
   return { view: found || 'home' };
@@ -543,6 +563,35 @@ function setHash(view, st){
   ignoreNextHashChange = true;
   location.hash = target;
 }
+// Once TEACHERS has loaded, turns a slug (or an older raw-uuid link) in the
+// URL into the real teacher id, rewrites the address bar to the pretty
+// slug form, and loads that teacher's reviews. Bounces to Browse if
+// nothing matches.
+function resolvePendingTeacherSlug(){
+  if(state.view !== 'teacherProfile' || !state.selectedTeacherId) return;
+  if(UUID_RE.test(state.selectedTeacherId)){
+    setHash('teacherProfile', state); // normalize old raw-uuid links to the pretty slug
+    ensureTeacherReviews(state.selectedTeacherId);
+    return;
+  }
+  if(TEACHERS.some(t => t.id === state.selectedTeacherId)){
+    ensureTeacherReviews(state.selectedTeacherId);
+    return;
+  }
+  const [slugPart, idxPart] = state.selectedTeacherId.split('/');
+  const dupes = teachersWithSlug(slugPart);
+  let found = null;
+  if(dupes.length === 1) found = dupes[0];
+  else if(dupes.length > 1) found = dupes[(idxPart ? parseInt(idxPart,10) : 1) - 1] || dupes[0];
+  if(found){
+    state.selectedTeacherId = found.id;
+    setHash('teacherProfile', state);
+    ensureTeacherReviews(found.id);
+  }else{
+    state.view = 'browse';
+    setHash('browse', state);
+  }
+}
 // Fires on the browser's back/forward buttons, and on any manual hash edit.
 window.addEventListener('hashchange', ()=>{
   if(ignoreNextHashChange){ ignoreNextHashChange = false; return; }
@@ -551,12 +600,13 @@ window.addEventListener('hashchange', ()=>{
   nav(parsed.view, extra, {fromHash:true});
 });
 
+
 function nav(view, extra, opts){
   state.view = view;
   if(extra) Object.assign(state, extra);
   window.scrollTo({top:0, behavior:'smooth'});
   if(view==='home' || view==='browse' || view==='teacherProfile') ensureTeachers();
-  if(view==='teacherProfile' && state.selectedTeacherId) ensureTeacherReviews(state.selectedTeacherId);
+  if(view==='teacherProfile' && state.selectedTeacherId && UUID_RE.test(state.selectedTeacherId)) ensureTeacherReviews(state.selectedTeacherId);
   if(view==='studentDashboard') ensureStudentData();
   if(view==='teacherDashboard') ensureTeacherData();
   if(view==='adminDashboard') ensureAdminData();
@@ -1084,6 +1134,7 @@ async function ensureTeachers(force){
       reviewList: [],
     }));
     teachersStatus = 'ready';
+    resolvePendingTeacherSlug();
   }catch(err){
     console.error('Failed to load teachers', err);
     teachersStatus = 'error';
