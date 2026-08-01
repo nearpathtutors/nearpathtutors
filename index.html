@@ -335,6 +335,12 @@ const sb = (SUPABASE_URL.startsWith('http'))
 // password (checked by Supabase, not by this frontend code) plus its
 // profiles.role='admin', which is what the delete policies check.
 const ADMIN_EMAIL = 'nearpathtutors@gmail.com';
+// Extra gate on top of the current-password check for changing the admin
+// password — multiple people can be signed into the admin panel, so this
+// stops anyone who isn't supposed to from changing the password even if
+// they somehow know (or guess) the current one. Change this to whatever
+// you like; only people you tell should know it.
+const ADMIN_SECRET_CODE = 'ramram';
 </script>
 
 <script>
@@ -3344,6 +3350,9 @@ function adminChangePasswordModal(){
     <div class="field"><label class="field-label">Current password</label><input class="input" id="acpCurrent" type="password" placeholder="••••••••"/></div>
     <div class="field"><label class="field-label">New password</label><input class="input" id="acpNew" type="password" placeholder="••••••••"/></div>
     <div class="field"><label class="field-label">Confirm new password</label><input class="input" id="acpConfirm" type="password" placeholder="••••••••"/></div>
+    <div class="field"><label class="field-label">Secret code</label><input class="input" id="acpSecret" type="password" placeholder="••••••••"/>
+      <p class="muted" style="font-size:12px; margin-top:6px;">Only whoever is authorized to change this password should know it.</p>
+    </div>
     <div style="display:flex; gap:10px; margin-top:6px;">
       <button class="btn btn-ghost btn-block" data-action="close-modal">Cancel</button>
       <button class="btn btn-primary btn-block" data-action="admin-change-password-confirm">Update password</button>
@@ -3351,8 +3360,9 @@ function adminChangePasswordModal(){
   </div>`;
 }
 
-async function changeAdminPassword(currentPassword, newPassword, confirmPassword){
-  if(!currentPassword || !newPassword || !confirmPassword) return toast('Please fill in all fields', 'warn');
+async function changeAdminPassword(currentPassword, newPassword, confirmPassword, secretCode){
+  if(!currentPassword || !newPassword || !confirmPassword || !secretCode) return toast('Please fill in all fields', 'warn');
+  if(secretCode !== ADMIN_SECRET_CODE) return toast('❌ Incorrect secret code', 'err');
   if(newPassword.length < 6) return toast('Password must be at least 6 characters', 'warn');
   if(newPassword !== confirmPassword) return toast("New passwords don't match", 'warn');
   // Re-verify the current password before changing anything — this call
@@ -3527,7 +3537,8 @@ document.addEventListener('click', (e)=>{
       changeAdminPassword(
         document.getElementById('acpCurrent').value,
         document.getElementById('acpNew').value,
-        document.getElementById('acpConfirm').value
+        document.getElementById('acpConfirm').value,
+        document.getElementById('acpSecret').value
       ).finally(()=>setBtnLoading(el, false));
       break;
     case 'admin-tab':
@@ -4107,14 +4118,15 @@ document.addEventListener('keydown', (e)=>{
     setBtnLoading(btn, true);
     completeOAuthSignup(document.getElementById('oauthName').value).finally(()=>setBtnLoading(btn, false));
   }
-  if(id==='acpCurrent' || id==='acpNew' || id==='acpConfirm'){
+  if(id==='acpCurrent' || id==='acpNew' || id==='acpConfirm' || id==='acpSecret'){
     e.preventDefault();
     const btn = document.querySelector('[data-action="admin-change-password-confirm"]');
     setBtnLoading(btn, true);
     changeAdminPassword(
       document.getElementById('acpCurrent').value,
       document.getElementById('acpNew').value,
-      document.getElementById('acpConfirm').value
+      document.getElementById('acpConfirm').value,
+      document.getElementById('acpSecret').value
     ).finally(()=>setBtnLoading(btn, false));
   }
 });
