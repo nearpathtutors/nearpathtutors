@@ -369,7 +369,8 @@ const state = {
   myLocation: null,      // { lat, lng } for the person browsing — used to auto-calc distance to each teacher
   locatingMe: false,     // true while a geolocation request is in flight
   postLoginRedirect: null,   // { view, selectedTeacherId, selectedTeacherFrom, reopenEnquiryFor, reopenChatFor } — where (and what) to restore after logging in or signing up mid-action, anywhere on the site
-  adminTab: 'teachers',       // 'teachers' | 'students' — which list the admin panel is showing
+  adminTab: 'analytics',       // 'analytics' | 'teachers' | 'students' — which panel the admin panel is showing
+  maintenanceMode: false,    // mirrors site_settings.value.enabled — when true, every visitor except a logged-in admin sees the maintenance page instead of the site
 };
 try{
   var savedLoc = localStorage.getItem('npt-my-location');
@@ -505,17 +506,116 @@ let teacherReviewsForId = null;
 
 let ADMIN_TEACHERS = [];    // every teacher profile, for the admin panel
 let ADMIN_STUDENTS = [];    // every student profile, for the admin panel
+let ADMIN_ENROLLMENTS = []; // every enrollment, for the admin Analytics tab
+let ADMIN_PAYMENTS = [];    // every payment, for the admin Analytics tab
+let ADMIN_ENQUIRIES = [];   // every enquiry, for the admin Analytics tab
+let ADMIN_REVIEWS = [];     // every review (with teacher/student names attached), for review moderation
 let adminDataStatus = 'idle'; // idle | loading | ready | error
 
-function nav(view, extra){
+/* =========================================================
+   ROUTING — gives every view a real URL (via the hash, so it
+   still works on a static host like GitHub Pages with no
+   server-side rewrites needed). This means:
+   - Refreshing the page reopens the same screen instead of
+     bouncing back to the homepage.
+   - Chrome's back/forward buttons move between screens.
+   - Links can be shared/bookmarked to a specific page.
+========================================================= */
+const VIEW_ROUTES = {
+  home: '/', browse: '/browse',
+  studentAuth: '/parents/login', studentDashboard: '/parents/dashboard',
+  teacherHome: '/teachers', teacherAuth: '/teachers/login',
+  teacherDashboard: '/teachers/dashboard', teacherOnboarding: '/teachers/onboarding',
+  adminAuth: '/admin/login', adminDashboard: '/admin/dashboard',
+};
+let ignoreNextHashChange = false;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function slugify(str){
+  return (str||'').toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/(^-+|-+$)/g,'');
+}
+// Same-named teachers get numbered in a stable order (by id) so the same
+// teacher always resolves to the same number, regardless of query order.
+function teachersWithSlug(slug){
+  return TEACHERS.filter(t => slugify(t.name)===slug).sort((a,b)=> a.id.localeCompare(b.id));
+}
+
+function hashForView(view, st){
+  if(view==='teacherProfile'){
+    const t = TEACHERS.find(x => x.id === st.selectedTeacherId);
+    if(!t) return '#/teacher/' + encodeURIComponent(st.selectedTeacherId || ''); // teacher list not loaded yet
+    const slug = slugify(t.name) || 'teacher';
+    const dupes = teachersWithSlug(slug);
+    if(dupes.length <= 1) return '#/teacher/' + encodeURIComponent(slug);
+    const idx = dupes.findIndex(x=>x.id===t.id) + 1;
+    return '#/teacher/' + encodeURIComponent(slug) + '/' + idx;
+  }
+  return '#' + (VIEW_ROUTES[view] || '/');
+}
+function viewFromHash(hash){
+  const path = (hash||'').replace(/^#/, '') || '/';
+  if(path.startsWith('/teacher/')){
+    // may be a full uuid (older links), "ritu-sharma", or "ritu-sharma/2"
+    // — resolved once the teacher list has loaded, see resolvePendingTeacherSlug()
+    return { view:'teacherProfile', selectedTeacherId: decodeURIComponent(path.slice('/teacher/'.length).replace(/\/$/,'')) };
+  }
+  const found = Object.keys(VIEW_ROUTES).find(k => VIEW_ROUTES[k]===path);
+  return { view: found || 'home' };
+}
+function setHash(view, st){
+  const target = hashForView(view, st);
+  if(location.hash === target) return;
+  ignoreNextHashChange = true;
+  location.hash = target;
+}
+// Once TEACHERS has loaded, turns a slug (or an older raw-uuid link) in the
+// URL into the real teacher id, rewrites the address bar to the pretty
+// slug form, and loads that teacher's reviews. Bounces to Browse if
+// nothing matches.
+function resolvePendingTeacherSlug(){
+  if(state.view !== 'teacherProfile' || !state.selectedTeacherId) return;
+  if(UUID_RE.test(state.selectedTeacherId)){
+    setHash('teacherProfile', state); // normalize old raw-uuid links to the pretty slug
+    ensureTeacherReviews(state.selectedTeacherId);
+    return;
+  }
+  if(TEACHERS.some(t => t.id === state.selectedTeacherId)){
+    ensureTeacherReviews(state.selectedTeacherId);
+    return;
+  }
+  const [slugPart, idxPart] = state.selectedTeacherId.split('/');
+  const dupes = teachersWithSlug(slugPart);
+  let found = null;
+  if(dupes.length === 1) found = dupes[0];
+  else if(dupes.length > 1) found = dupes[(idxPart ? parseInt(idxPart,10) : 1) - 1] || dupes[0];
+  if(found){
+    state.selectedTeacherId = found.id;
+    setHash('teacherProfile', state);
+    ensureTeacherReviews(found.id);
+  }else{
+    state.view = 'browse';
+    setHash('browse', state);
+  }
+}
+// Fires on the browser's back/forward buttons, and on any manual hash edit.
+window.addEventListener('hashchange', ()=>{
+  if(ignoreNextHashChange){ ignoreNextHashChange = false; return; }
+  const parsed = viewFromHash(location.hash);
+  const extra = parsed.selectedTeacherId ? {selectedTeacherId: parsed.selectedTeacherId, selectedTeacherFrom:'home'} : null;
+  nav(parsed.view, extra, {fromHash:true});
+});
+
+
+function nav(view, extra, opts){
   state.view = view;
   if(extra) Object.assign(state, extra);
   window.scrollTo({top:0, behavior:'smooth'});
   if(view==='home' || view==='browse' || view==='teacherProfile') ensureTeachers();
-  if(view==='teacherProfile' && state.selectedTeacherId) ensureTeacherReviews(state.selectedTeacherId);
+  if(view==='teacherProfile' && state.selectedTeacherId && UUID_RE.test(state.selectedTeacherId)) ensureTeacherReviews(state.selectedTeacherId);
   if(view==='studentDashboard') ensureStudentData();
   if(view==='teacherDashboard') ensureTeacherData();
   if(view==='adminDashboard') ensureAdminData();
+  if(!opts || !opts.fromHash) setHash(view, state);
   render();
 }
 
@@ -761,15 +861,33 @@ async function boot(){
     if(userChanged || event === 'SIGNED_OUT') render();
   });
 
-  const { data:{ session } } = await sb.auth.getSession();
-  state.session = session;
-  lastAuthUserId = session?.user?.id || null;
-  await refreshProfile();
+  await Promise.all([
+    (async()=>{
+      const { data:{ session } } = await sb.auth.getSession();
+      state.session = session;
+      lastAuthUserId = session?.user?.id || null;
+      await refreshProfile();
+    })(),
+    ensureMaintenanceStatus(), // fetched alongside the session so the first paint doesn't flash the full site before flipping to the maintenance page
+  ]);
+  subscribeMaintenanceRealtime();
 
   // support ?teacher=<id> deep links (e.g. shared from a teacher's dashboard)
   const params = new URLSearchParams(location.search);
   const sharedTeacher = params.get('teacher');
-  if(sharedTeacher){ state.view = 'teacherProfile'; state.selectedTeacherId = sharedTeacher; state.selectedTeacherFrom = 'home'; }
+  if(sharedTeacher){
+    state.view = 'teacherProfile'; state.selectedTeacherId = sharedTeacher; state.selectedTeacherFrom = 'home';
+    setHash('teacherProfile', state);
+  }else if(location.hash){
+    // restores whichever screen was open before a refresh, and is also
+    // what a shared/bookmarked link like #/teacher/<id> opens directly to
+    const parsed = viewFromHash(location.hash);
+    state.view = parsed.view;
+    if(parsed.selectedTeacherId){ state.selectedTeacherId = parsed.selectedTeacherId; state.selectedTeacherFrom = 'home'; }
+  }else{
+    // no hash yet on first-ever visit — write one so refresh/back stay in sync from here on
+    setHash(state.view, state);
+  }
 
   ensureTeachers();
   render();
@@ -777,7 +895,8 @@ async function boot(){
   // Ask for the person's location once on entry, so teacher cards can show
   // a live distance right away. Skipped if we already have a location, or
   // they've dismissed this prompt on a previous visit.
-  if(!state.myLocation && !locationPreviouslyDeclined){
+  const showingMaintenancePage = state.maintenanceMode && state.profile?.role!=='admin';
+  if(!showingMaintenancePage && !state.myLocation && !locationPreviouslyDeclined){
     openModal(locationPromptModal());
   }
 }
@@ -1027,6 +1146,7 @@ async function ensureTeachers(force){
       reviewList: [],
     }));
     teachersStatus = 'ready';
+    resolvePendingTeacherSlug();
   }catch(err){
     console.error('Failed to load teachers', err);
     teachersStatus = 'error';
@@ -1115,16 +1235,40 @@ async function ensureAdminData(force){
   if(adminDataStatus==='ready' && !force) return;
   adminDataStatus = 'loading';
   try{
-    const [{data:profiles, error}, {data:teacherRows, error:tErr}] = await Promise.all([
+    // enrollments/payments/enquiries are normally only visible to the two
+    // people involved — the "admins can view all …" policies in
+    // schema.sql are what let these three queries return every row here.
+    const [
+      {data:profiles, error},
+      {data:teacherRows, error:tErr},
+      {data:enrollmentRows, error:enErr},
+      {data:paymentRows, error:payErr},
+      {data:enquiryRows, error:enqErr},
+      {data:reviewRows, error:revErr},
+    ] = await Promise.all([
       sb.from('profiles').select('*').order('created_at',{ascending:false}),
       sb.from('teacher_profiles').select('profile_id, category, subjects, fee_start, fee_unit, rating, reviews'),
+      sb.from('enrollments').select('id, student_id, teacher_id, subject, fee, status, created_at'),
+      sb.from('payments').select('id, student_id, amount, method, paid_at'),
+      sb.from('enquiries').select('id, teacher_id, student_id, created_at'),
+      sb.from('reviews').select('id, teacher_id, student_id, rating, comment, created_at').order('created_at',{ascending:false}),
     ]);
     if(error) throw error;
     if(tErr) throw tErr;
+    if(enErr) throw enErr;
+    if(payErr) throw payErr;
+    if(enqErr) throw enqErr;
+    if(revErr) throw revErr;
     const teacherById = {};
     teacherRows.forEach(t=>{ teacherById[t.profile_id] = t; });
     ADMIN_STUDENTS = profiles.filter(p=>p.role==='student');
     ADMIN_TEACHERS = profiles.filter(p=>p.role==='teacher').map(p=>({ ...p, listing: teacherById[p.id] || null }));
+    ADMIN_ENROLLMENTS = enrollmentRows || [];
+    ADMIN_PAYMENTS = paymentRows || [];
+    ADMIN_ENQUIRIES = enquiryRows || [];
+    const nameById = {};
+    profiles.forEach(p=>{ nameById[p.id] = p.full_name; });
+    ADMIN_REVIEWS = (reviewRows||[]).map(r=>({ ...r, teacherName: nameById[r.teacher_id] || 'Unknown teacher', studentName: nameById[r.student_id] || 'Unknown student' }));
     adminDataStatus = 'ready';
   }catch(err){
     console.error('Failed to load admin data', err);
@@ -1134,12 +1278,68 @@ async function ensureAdminData(force){
 }
 
 /* =========================================================
+   SITE MAINTENANCE MODE — a single publicly-readable row in
+   site_settings (key='maintenance', value:{enabled}) that every
+   visitor's page checks before rendering anything else. Toggled from
+   the admin panel (setMaintenanceMode below); the update itself is
+   gated server-side by an admin-only RLS policy (see schema.sql), so
+   this is a real lock, not just a client-side flag. A realtime
+   subscription means anyone already browsing sees the maintenance page
+   appear/disappear live, with no refresh needed.
+========================================================= */
+let maintenanceChannel = null;
+
+async function ensureMaintenanceStatus(){
+  try{
+    // maybeSingle (not single) so a project that hasn't run the
+    // migration for this yet just quietly defaults to "off" instead of
+    // throwing on a missing row/table.
+    const { data, error } = await sb.from('site_settings').select('value').eq('key','maintenance').maybeSingle();
+    if(!error && data) state.maintenanceMode = !!data.value?.enabled;
+  }catch(err){
+    console.error('Failed to load maintenance status', err);
+  }
+}
+
+function subscribeMaintenanceRealtime(){
+  if(maintenanceChannel) return;
+  maintenanceChannel = sb.channel('site-settings-watch')
+    .on('postgres_changes', { event:'UPDATE', schema:'public', table:'site_settings', filter:'key=eq.maintenance' }, (payload)=>{
+      state.maintenanceMode = !!payload.new?.value?.enabled;
+      render();
+    })
+    .subscribe();
+}
+
+// Flips maintenance mode on/off from the admin panel. schema.sql's RLS
+// policy is what actually restricts this to admins — this function just
+// calls the update and reflects the result locally, same as every other
+// open tab/browser will a moment later via the realtime subscription.
+async function setMaintenanceMode(enabled){
+  const { error } = await sb.from('site_settings')
+    .update({ value: { enabled }, updated_at: new Date().toISOString() })
+    .eq('key', 'maintenance');
+  if(error) return toast('❌ ' + error.message, 'err');
+  state.maintenanceMode = enabled;
+  toast(enabled ? '🛠️ Maintenance mode is ON — visitors now see a maintenance page.' : '✅ Maintenance mode is off — the site is live again.', enabled ? 'warn' : 'ok');
+  render();
+}
+
+/* =========================================================
    SHARED CHROME (navbar)
 ========================================================= */
 function navbar(){
   const c = state.portal;
   const loggedIn = !!state.session;
+  const maintenanceBanner = (state.maintenanceMode && state.profile?.role==='admin') ? `
+  <div class="wrap" style="padding-top:12px;">
+    <div class="glass" style="padding:10px 16px; display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; border:1px solid var(--amber); background:rgba(245,166,35,0.08);">
+      <span style="font-size:12.5px; font-weight:600; color:var(--amber);">🛠️ Maintenance mode is ON — everyone but you sees the maintenance page right now.</span>
+      <button class="btn btn-ghost btn-sm" data-action="toggle-maintenance">Turn off</button>
+    </div>
+  </div>` : '';
   return `
+  ${maintenanceBanner}
   <div class="nav">
     <div class="wrap">
       <div class="nav-inner glass">
@@ -1807,6 +2007,31 @@ function viewTeacherDashboard(){
   </div>`;
 }
 
+// Shown instead of the whole site (see render()'s gate near the top) to
+// anyone who isn't a logged-in admin while maintenance mode is on. Deliberately
+// bare — no navbar, nowhere else to click — except the admin login itself,
+// which reuses signInAdmin()/the same field ids as viewAdminAuth so an
+// admin can always get back in without another screen.
+function viewMaintenance(){
+  return `
+  <div class="wrap view-transition" style="padding-top:70px; max-width:440px; margin:0 auto;">
+    <div class="glass" style="padding:40px; text-align:center;">
+      <div style="font-size:38px;">🛠️</div>
+      <h1 style="font-size:22px; margin-top:14px;">We'll be right back</h1>
+      <p class="muted" style="margin-top:10px; font-size:13.5px; line-height:1.6;">
+        NearPath Tutors is temporarily down for maintenance. Please check back shortly.
+      </p>
+    </div>
+    <div class="glass" style="padding:28px; margin-top:16px;">
+      <h2 style="font-size:15px; margin-bottom:4px;">🔒 Admin login</h2>
+      <p class="muted" style="font-size:12.5px; margin-bottom:18px;">Site administrators can log in here to manage the site while it's offline.</p>
+      <div class="field"><label class="field-label">Username</label><input class="input" id="adUsername" placeholder="admin"/></div>
+      <div class="field"><label class="field-label">Password</label><input class="input" id="adPassword" type="password" placeholder="••••••••"/></div>
+      <button class="btn btn-primary btn-block" data-action="login-admin">Log in</button>
+    </div>
+  </div>`;
+}
+
 function viewAdminAuth(){
   return `
   ${navbar()}
@@ -1834,17 +2059,29 @@ function viewAdminDashboard(){
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:22px;">
       <div>
         <div class="eyebrow">Admin panel</div>
-        <h1 style="font-size:26px; margin-top:4px;">All profiles</h1>
+        <h1 style="font-size:26px; margin-top:4px;">${state.adminTab==='analytics' ? 'Overview' : 'All profiles'}</h1>
       </div>
       <div style="display:flex; gap:8px;">
         <button class="btn btn-ghost btn-sm" data-action="admin-change-password">🔑 Change password</button>
         <button class="btn btn-ghost btn-sm" data-action="logout">🚪 Log out</button>
       </div>
     </div>
-    <div style="display:flex; gap:10px; margin-bottom:18px;">
+
+    <div class="glass" style="padding:16px 20px; margin-bottom:18px; display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap; ${state.maintenanceMode ? 'border:1px solid var(--red);' : ''}">
+      <div>
+        <div style="font-weight:600; font-size:14px;">🛠️ Site maintenance mode</div>
+        <div class="muted" style="font-size:12.5px; margin-top:2px;">${state.maintenanceMode ? 'The site is currently down for every visitor except logged-in admins.' : 'Turn this on to take the public site offline while you make changes — the admin login stays reachable.'}</div>
+      </div>
+      <button class="btn btn-sm" style="${state.maintenanceMode ? 'background:var(--red); border-color:var(--red); color:#fff;' : 'background:var(--glass); border:1px solid var(--glass-border);'}" data-action="toggle-maintenance">${state.maintenanceMode ? '✅ Turn off' : '🛠️ Turn on'}</button>
+    </div>
+
+    <div style="display:flex; gap:10px; margin-bottom:18px; flex-wrap:wrap;">
+      <div class="pill ${state.adminTab==='analytics'?'active':''}" data-action="admin-tab" data-tab="analytics">📊 Analytics</div>
       <div class="pill ${state.adminTab==='teachers'?'active':''}" data-action="admin-tab" data-tab="teachers">🍎 Teachers (${ADMIN_TEACHERS.length})</div>
       <div class="pill ${state.adminTab==='students'?'active':''}" data-action="admin-tab" data-tab="students">👪 Students (${ADMIN_STUDENTS.length})</div>
     </div>
+
+    ${state.adminTab==='analytics' ? adminAnalyticsView() : `
     <div class="glass" style="padding:22px;">
       ${rows.length ? `<table class="data-table">
         <thead><tr><th>Name</th>${state.adminTab==='teachers' ? '<th>Category</th><th>Subjects</th><th>Rating</th>' : ''}<th>Joined</th><th></th></tr></thead>
@@ -1861,8 +2098,115 @@ function viewAdminDashboard(){
           </tr>`).join('')}
         </tbody>
       </table>` : `<p class="muted" style="font-size:13.5px;">No ${state.adminTab} yet.</p>`}
-    </div>
+    </div>`}
   </div>`;
+}
+
+// The admin panel's Analytics tab: headline stat cards, an enrollment-fee
+// status breakdown, a teachers-by-category breakdown, a top-rated-teachers
+// table, and a review moderation table (with a delete button per review —
+// see the "admin-delete-review" action). All computed client-side from
+// ADMIN_TEACHERS/STUDENTS/ENROLLMENTS/PAYMENTS/ENQUIRIES/REVIEWS, which
+// ensureAdminData() loads together with the rest of the admin panel.
+function adminAnalyticsView(){
+  const totalRevenue = ADMIN_PAYMENTS.reduce((s,p)=>s+(p.amount||0),0);
+  const outstanding = ADMIN_ENROLLMENTS.filter(e=>e.status!=='paid').reduce((s,e)=>s+(e.fee||0),0);
+  const dueCount = ADMIN_ENROLLMENTS.filter(e=>e.status==='due').length;
+  const overdueCount = ADMIN_ENROLLMENTS.filter(e=>e.status==='overdue').length;
+  const paidCount = ADMIN_ENROLLMENTS.filter(e=>e.status==='paid').length;
+  const avgRating = ADMIN_REVIEWS.length ? (ADMIN_REVIEWS.reduce((s,r)=>s+r.rating,0)/ADMIN_REVIEWS.length).toFixed(1) : null;
+  const sevenDaysAgo = Date.now() - 7*24*60*60*1000;
+  const newSignups7d = [...ADMIN_TEACHERS, ...ADMIN_STUDENTS].filter(p=>new Date(p.created_at).getTime()>=sevenDaysAgo).length;
+  const unratedTeachers = ADMIN_TEACHERS.filter(t=>!t.listing?.reviews).length;
+
+  const categoryCounts = {};
+  ADMIN_TEACHERS.forEach(t=>{ const cat = t.listing?.category || 'uncategorized'; categoryCounts[cat] = (categoryCounts[cat]||0)+1; });
+  const categoryEntries = Object.entries(categoryCounts).sort((a,b)=>b[1]-a[1]);
+  const maxCategoryCount = Math.max(1, ...categoryEntries.map(e=>e[1]));
+
+  const statusBreakdown = [
+    {label:'Paid', count:paidCount, color:'var(--green)'},
+    {label:'Due', count:dueCount, color:'var(--amber)'},
+    {label:'Overdue', count:overdueCount, color:'var(--red)'},
+  ];
+  const maxStatusCount = Math.max(1, ...statusBreakdown.map(s=>s.count));
+
+  const topTeachers = ADMIN_TEACHERS
+    .filter(t=>t.listing?.reviews)
+    .sort((a,b)=>(b.listing.rating - a.listing.rating) || (b.listing.reviews - a.listing.reviews))
+    .slice(0,5);
+
+  return `
+  <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:14px; margin-bottom:20px;">
+    <div class="glass stat-card"><div class="eyebrow">Teachers</div><div class="stat-num">${ADMIN_TEACHERS.length}</div></div>
+    <div class="glass stat-card"><div class="eyebrow">Students</div><div class="stat-num">${ADMIN_STUDENTS.length}</div></div>
+    <div class="glass stat-card"><div class="eyebrow">Enrollments</div><div class="stat-num">${ADMIN_ENROLLMENTS.length}</div></div>
+    <div class="glass stat-card"><div class="eyebrow">Enquiries</div><div class="stat-num">${ADMIN_ENQUIRIES.length}</div></div>
+    <div class="glass stat-card"><div class="eyebrow">Revenue collected</div><div class="stat-num" style="font-size:26px;">₹${totalRevenue.toLocaleString('en-IN')}</div></div>
+    <div class="glass stat-card"><div class="eyebrow">Fees outstanding</div><div class="stat-num" style="font-size:26px; color:${outstanding>0?'var(--red)':'var(--green)'}">₹${outstanding.toLocaleString('en-IN')}</div></div>
+    <div class="glass stat-card"><div class="eyebrow">Avg. review rating</div><div class="stat-num">${avgRating ? avgRating+'★' : '—'}</div></div>
+    <div class="glass stat-card"><div class="eyebrow">Signups (7d)</div><div class="stat-num" style="font-size:26px;">${newSignups7d}</div></div>
+  </div>
+
+  <div class="grid-2" style="margin-bottom:20px;">
+    <div class="glass" style="padding:22px;">
+      <h3 style="font-size:15px; margin-bottom:16px;">Enrollment fee status</h3>
+      <div style="display:flex; flex-direction:column; gap:12px;">
+        ${statusBreakdown.map(s=>`
+        <div>
+          <div style="display:flex; justify-content:space-between; font-size:12.5px; margin-bottom:4px;"><span>${s.label}</span><span class="muted">${s.count}</span></div>
+          <div style="height:8px; border-radius:6px; background:var(--divider); overflow:hidden;">
+            <div style="height:100%; width:${(s.count/maxStatusCount*100)}%; background:${s.color}; border-radius:6px;"></div>
+          </div>
+        </div>`).join('')}
+      </div>
+      <p class="muted" style="font-size:12px; margin-top:14px;">${unratedTeachers} teacher${unratedTeachers===1?'':'s'} yet to receive a first review.</p>
+    </div>
+    <div class="glass" style="padding:22px;">
+      <h3 style="font-size:15px; margin-bottom:16px;">Teachers by category</h3>
+      ${categoryEntries.length ? `<div style="display:flex; flex-direction:column; gap:12px;">
+        ${categoryEntries.map(([cat,count])=>`
+        <div>
+          <div style="display:flex; justify-content:space-between; font-size:12.5px; margin-bottom:4px;"><span style="text-transform:capitalize;">${cat}</span><span class="muted">${count}</span></div>
+          <div style="height:8px; border-radius:6px; background:var(--divider); overflow:hidden;">
+            <div style="height:100%; width:${(count/maxCategoryCount*100)}%; background:linear-gradient(90deg,var(--primary),var(--primary2)); border-radius:6px;"></div>
+          </div>
+        </div>`).join('')}
+      </div>` : `<p class="muted" style="font-size:13px;">No teachers yet.</p>`}
+    </div>
+  </div>
+
+  <div class="glass" style="padding:22px; margin-bottom:20px;">
+    <h3 style="font-size:15px; margin-bottom:16px;">Top-rated teachers</h3>
+    ${topTeachers.length ? `<table class="data-table">
+      <thead><tr><th>Name</th><th>Category</th><th>Rating</th></tr></thead>
+      <tbody>
+        ${topTeachers.map(t=>`<tr><td style="font-weight:600;">${t.full_name || 'Unnamed'}</td><td class="muted" style="text-transform:capitalize;">${t.listing?.category||'—'}</td><td style="color:${ratingColor(t.listing.rating)};">${starString(t.listing.rating)} <span class="muted">(${t.listing.reviews})</span></td></tr>`).join('')}
+      </tbody>
+    </table>` : `<p class="muted" style="font-size:13px;">No reviews yet.</p>`}
+  </div>
+
+  <div class="glass" style="padding:22px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+      <h3 style="font-size:15px;">Review moderation</h3>
+      <span class="muted" style="font-size:12px;">${ADMIN_REVIEWS.length} total</span>
+    </div>
+    ${ADMIN_REVIEWS.length ? `<table class="data-table">
+      <thead><tr><th>Teacher</th><th>Student</th><th>Rating</th><th>Comment</th><th>Date</th><th></th></tr></thead>
+      <tbody>
+        ${ADMIN_REVIEWS.map(r=>`
+        <tr>
+          <td style="font-weight:600;">${r.teacherName}</td>
+          <td class="muted">${r.studentName}</td>
+          <td style="color:${ratingColor(r.rating)}; white-space:nowrap;">${starString(r.rating)}</td>
+          <td class="muted" style="max-width:260px;">${r.comment ? escapeHtml(r.comment) : '<span style="opacity:.5;">No comment</span>'}</td>
+          <td class="muted" style="white-space:nowrap;">${new Date(r.created_at).toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'})}</td>
+          <td><button class="btn btn-ghost btn-sm" style="color:var(--red);" data-action="admin-delete-review" data-id="${r.id}" title="Remove review">🗑️</button></td>
+        </tr>`).join('')}
+      </tbody>
+    </table>` : `<p class="muted" style="font-size:13.5px;">No reviews yet.</p>`}
+  </div>
+  `;
 }
 
 
@@ -1991,8 +2335,12 @@ async function ensureConversations(force){
     }
 
     const col = role==='teacher' ? 'teacher_id' : 'student_id';
-    const { data: msgs, error: msgErr } = await sb.from('messages').select('teacher_id, student_id, sender_id, body, created_at').eq(col, uid).order('created_at', {ascending:true});
+    const { data: msgs, error: msgErr } = await sb.from('messages').select('teacher_id, student_id, sender_id, body, created_at, read_at').eq(col, uid).order('created_at', {ascending:true});
     if(msgErr) throw msgErr;
+    // The thread I currently have open (if any) is always treated as read —
+    // its messages get marked read the moment it's opened (see loadChatMessages),
+    // but that write can lag a beat behind this query.
+    const openOtherId = (chatWidgetOpen && chatWidgetView==='thread') ? (role==='teacher' ? chatStudentId : chatTeacherId) : null;
     msgs.forEach(m=>{
       const otherId = role==='teacher' ? m.student_id : m.teacher_id;
       let p = partners.get(otherId);
@@ -2003,6 +2351,9 @@ async function ensureConversations(force){
       p.lastMessage = m.body;
       p.lastAt = m.created_at;
       p.lastMine = m.sender_id === uid;
+      // Recomputed on every message in order, so by the end this reflects
+      // only the most recent message's read status, per partner.
+      p.unread = otherId !== openOtherId && m.sender_id !== uid && !m.read_at;
     });
 
     // Resolve display names for any partner discovered only via messages
@@ -2036,7 +2387,7 @@ async function ensureConversations(force){
     const merged = new Map(myConversations.map(c=>[c.id, c]));
     partners.forEach((fresh, id)=>{
       const existing = merged.get(id);
-      merged.set(id, existing ? { ...existing, ...fresh, unread: existing.unread } : fresh);
+      merged.set(id, existing ? { ...existing, ...fresh } : fresh);
     });
     myConversations = [...merged.values()].sort((a,b)=> new Date(b.lastAt||0) - new Date(a.lastAt||0));
     conversationsStatus = 'ready';
@@ -2844,6 +3195,11 @@ const NEEDS_TEACHERS = new Set(['home','browse','teacherProfile']);
 
 function render(){
   if(!isConfigured()){ document.getElementById('app').innerHTML = setupMissingScreen(); return; }
+  if(state.maintenanceMode && state.profile?.role!=='admin'){
+    document.getElementById('app').innerHTML = viewMaintenance();
+    renderChatDock();
+    return;
+  }
   if(state.session && awaitingOAuthName){
     document.getElementById('app').innerHTML = viewOAuthNamePrompt();
     return;
@@ -2892,6 +3248,10 @@ document.addEventListener('click', (e)=>{
       break;
     case 'go-admin':
       nav(state.session && state.profile?.role==='admin' ? 'adminDashboard' : 'adminAuth');
+      break;
+    case 'toggle-maintenance':
+      setBtnLoading(el, true);
+      setMaintenanceMode(!state.maintenanceMode).finally(()=>setBtnLoading(el, false));
       break;
     case 'login-admin':
       setBtnLoading(el, true);
@@ -2955,6 +3315,19 @@ document.addEventListener('click', (e)=>{
         adminDataStatus = 'idle';
         ensureAdminData();
         teachersStatus = 'idle'; // the removed teacher may be cached in the public listing too
+      }).finally(()=>setBtnLoading(el, false));
+      break;
+    }
+    case 'admin-delete-review': {
+      const id = el.dataset.id;
+      if(!confirm('Delete this review? This cannot be undone, and the teacher\'s average rating will be recalculated.')) return;
+      setBtnLoading(el, true);
+      sb.from('reviews').delete().eq('id', id).then(({error})=>{
+        if(error){ toast('❌ ' + error.message, 'err'); return; }
+        toast('🗑️ Review removed', 'ok');
+        adminDataStatus = 'idle';
+        ensureAdminData(true);
+        teachersStatus = 'idle'; // the teacher's rating may have changed in the public listing too
       }).finally(()=>setBtnLoading(el, false));
       break;
     }
@@ -3057,19 +3430,41 @@ document.addEventListener('click', (e)=>{
       break;
     case 'send-enquiry': {
       const msg = document.getElementById('enquiryMsg').value;
+      const teacherId = el.dataset.id, teacherName = el.dataset.name, studentId = state.session.user.id;
       setBtnLoading(el, true);
-      sb.from('enquiries').insert({ teacher_id: el.dataset.id, student_id: state.session.user.id, message: msg })
-        .then(({error})=>{
-          if(error){ toast('❌ ' + error.message, 'err'); return; }
-          closeModal();
-          toast('✅ Enquiry sent to ' + el.dataset.name + '!', 'ok');
-          // Surface this teacher in the chat inbox right away, rather than
-          // waiting for the next full conversations refresh.
-          if(!myConversations.some(c=>c.id===el.dataset.id)){
-            myConversations.unshift({ id:el.dataset.id, name:el.dataset.name, lastMessage:null, lastAt:null, lastMine:false, unread:false, typing:false });
-            renderChatDock();
-          }
-        }).finally(()=>setBtnLoading(el, false));
+      (async () => {
+        const { error } = await sb.from('enquiries').insert({ teacher_id: teacherId, student_id: studentId, message: msg });
+        if(error){ toast('❌ ' + error.message, 'err'); setBtnLoading(el, false); return; }
+        closeModal();
+        toast('✅ Enquiry sent to ' + teacherName + '!', 'ok');
+
+        // Only the first-ever contact with this teacher also gets posted as
+        // a real chat message — if a thread already exists, the enquiry
+        // still gets logged in the teacher's Enquiries tab, but doesn't
+        // duplicate itself into an already-ongoing conversation.
+        const { count } = await sb.from('messages')
+          .select('id', { count:'exact', head:true })
+          .eq('teacher_id', teacherId).eq('student_id', studentId);
+        const isFirstContact = !count;
+        if(isFirstContact){
+          await sb.from('messages').insert({ teacher_id: teacherId, student_id: studentId, sender_id: studentId, body: msg });
+        }
+
+        // Surface this teacher (and the message, if it's new) in the chat
+        // inbox right away, rather than waiting for the next full refresh.
+        const existing = myConversations.find(c=>c.id===teacherId);
+        if(existing){
+          if(isFirstContact){ existing.lastMessage = msg; existing.lastAt = new Date().toISOString(); existing.lastMine = true; }
+        }else{
+          myConversations.unshift({
+            id:teacherId, name:teacherName,
+            lastMessage: isFirstContact ? msg : null, lastAt: isFirstContact ? new Date().toISOString() : null,
+            lastMine: isFirstContact, unread:false, typing:false,
+          });
+        }
+        renderChatDock();
+        setBtnLoading(el, false);
+      })();
       break;
     }
     case 'enroll-now': {

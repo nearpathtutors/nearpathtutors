@@ -105,11 +105,25 @@ create table messages (
   created_at timestamptz not null default now()
 );
 
+-- 9) site_settings: a small key/value store for site-wide toggles.
+-- Currently holds one row (key='maintenance', value={"enabled":bool}) that
+-- every visitor's page checks before rendering anything else. Publicly
+-- readable (any visitor needs to check it) but only an admin can change
+-- it — see the "admins can change site settings" policy below.
+create table site_settings (
+  key text primary key,
+  value jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now()
+);
+insert into site_settings (key, value) values ('maintenance', jsonb_build_object('enabled', false))
+  on conflict (key) do nothing;
+
 -- ---------------------------------------------------------------
 -- Row Level Security: lock every table down, then open specific,
 -- narrow policies. Without this, the anon key can read/write anything.
 -- ---------------------------------------------------------------
 alter table profiles enable row level security;
+alter table site_settings enable row level security;
 alter table teacher_profiles enable row level security;
 alter table schedule_slots enable row level security;
 alter table enquiries enable row level security;
@@ -143,6 +157,40 @@ $$ language sql security definer stable;
 -- cascade") to that person's teacher_profiles/schedule_slots, enquiries,
 -- enrollments, payments, and reviews automatically.
 create policy "admins can delete any profile" on profiles for delete using (is_admin());
+
+-- Lets the admin panel's Analytics tab total up enrollments, payments, and
+-- enquiries across every user (each of those tables is otherwise only
+-- visible to the two people involved — see their policies further down).
+create policy "admins can view all enrollments" on enrollments for select using (is_admin());
+create policy "admins can view all payments" on payments for select using (is_admin());
+create policy "admins can view all enquiries" on enquiries for select using (is_admin());
+
+-- Lets the admin panel's review-moderation table remove an inappropriate
+-- review. reviews are already publicly readable (see their own policy),
+-- so this only adds the delete permission. The rating trigger further
+-- down recalculates the teacher's average automatically afterwards.
+create policy "admins can delete any review" on reviews for delete using (is_admin());
+
+-- site_settings: publicly readable (every visitor's page checks the
+-- maintenance flag before rendering), but only an admin can change it —
+-- this is the actual lock behind the admin panel's maintenance toggle.
+create policy "site settings are publicly readable" on site_settings for select using (true);
+create policy "admins can change site settings" on site_settings for all using (is_admin()) with check (is_admin());
+
+-- ---------------------------------------------------------------
+-- Realtime: stream site_settings changes to every open tab, so someone
+-- already browsing sees the maintenance page appear/disappear live the
+-- moment an admin toggles it, without needing to refresh.
+-- ---------------------------------------------------------------
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'site_settings'
+  ) then
+    alter publication supabase_realtime add table site_settings;
+  end if;
+end $$;
 
 -- teacher_profiles: the whole point is to be a public directory.
 create policy "teacher profiles are publicly readable" on teacher_profiles for select using (true);
@@ -338,6 +386,43 @@ grant execute on function mark_messages_read(uuid) to authenticated;
 -- $$ language sql security definer;
 --
 -- grant execute on function mark_messages_read(uuid) to authenticated;
+
+-- ---------------------------------------------------------------
+-- MIGRATION: adds site-wide maintenance mode (the site_settings table,
+-- its RLS policies, and turning on Realtime for it) plus the admin
+-- policies the Analytics tab needs to total up enrollments, payments,
+-- enquiries, and to moderate (delete) reviews. Safe to re-run.
+-- ---------------------------------------------------------------
+-- create table if not exists site_settings (
+--   key text primary key,
+--   value jsonb not null default '{}'::jsonb,
+--   updated_at timestamptz not null default now()
+-- );
+-- insert into site_settings (key, value) values ('maintenance', jsonb_build_object('enabled', false))
+--   on conflict (key) do nothing;
+-- alter table site_settings enable row level security;
+-- drop policy if exists "site settings are publicly readable" on site_settings;
+-- create policy "site settings are publicly readable" on site_settings for select using (true);
+-- drop policy if exists "admins can change site settings" on site_settings;
+-- create policy "admins can change site settings" on site_settings for all using (is_admin()) with check (is_admin());
+-- do $$
+-- begin
+--   if not exists (
+--     select 1 from pg_publication_tables
+--     where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'site_settings'
+--   ) then
+--     alter publication supabase_realtime add table site_settings;
+--   end if;
+-- end $$;
+--
+-- drop policy if exists "admins can view all enrollments" on enrollments;
+-- create policy "admins can view all enrollments" on enrollments for select using (is_admin());
+-- drop policy if exists "admins can view all payments" on payments;
+-- create policy "admins can view all payments" on payments for select using (is_admin());
+-- drop policy if exists "admins can view all enquiries" on enquiries;
+-- create policy "admins can view all enquiries" on enquiries for select using (is_admin());
+-- drop policy if exists "admins can delete any review" on reviews;
+-- create policy "admins can delete any review" on reviews for delete using (is_admin());
 
 -- ---------------------------------------------------------------
 -- email_exists: lets the "Forgot password" screen tell someone whether
