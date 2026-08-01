@@ -83,6 +83,20 @@ create table reviews (
   created_at timestamptz not null default now()
 );
 
+-- 8) messages: a realtime back-and-forth chat between one student and
+-- one teacher. Unlike `enquiries` (a single first-contact note shown in
+-- the teacher's dashboard), this is an ongoing thread — every row is one
+-- message, and the app subscribes to new rows via Supabase Realtime so
+-- both sides see replies appear instantly, with no refresh needed.
+create table messages (
+  id bigserial primary key,
+  teacher_id uuid not null references teacher_profiles(profile_id) on delete cascade,
+  student_id uuid not null references profiles(id) on delete cascade,
+  sender_id uuid not null references profiles(id) on delete cascade,
+  body text not null,
+  created_at timestamptz not null default now()
+);
+
 -- ---------------------------------------------------------------
 -- Row Level Security: lock every table down, then open specific,
 -- narrow policies. Without this, the anon key can read/write anything.
@@ -94,6 +108,7 @@ alter table enquiries enable row level security;
 alter table enrollments enable row level security;
 alter table payments enable row level security;
 alter table reviews enable row level security;
+alter table messages enable row level security;
 
 -- profiles: names are shown publicly (e.g. "with Ritu Sharma"), but only
 -- the owner can create/change their own row.
@@ -149,6 +164,30 @@ create policy "reviews are publicly readable" on reviews for select using (true)
 create policy "students can leave a review" on reviews for insert with check (auth.uid() = student_id);
 create policy "students can edit their own review" on reviews for update using (auth.uid() = student_id);
 
+-- messages: only the two people in a conversation can read it, and you
+-- can only ever send as yourself, and only into a conversation you're
+-- actually part of (as its teacher or its student).
+create policy "messages visible to the two participants" on messages for select using (auth.uid() = teacher_id or auth.uid() = student_id);
+create policy "participants can send messages" on messages for insert with check (
+  auth.uid() = sender_id and (auth.uid() = teacher_id or auth.uid() = student_id)
+);
+
+-- ---------------------------------------------------------------
+-- Realtime: stream new `messages` rows to subscribed clients the instant
+-- they're inserted, so both sides see a reply appear without refreshing.
+-- Wrapped in an existence check so this file stays safe to re-run (adding
+-- a table that's already in the publication would otherwise error).
+-- ---------------------------------------------------------------
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'messages'
+  ) then
+    alter publication supabase_realtime add table messages;
+  end if;
+end $$;
+
 -- ---------------------------------------------------------------
 -- Keep teacher_profiles.rating / .reviews as a live average instead of a
 -- fixed default, so every teacher starts with no rating shown until real
@@ -203,6 +242,36 @@ for each row execute function update_teacher_rating();
 --
 -- drop policy if exists "admins can delete any profile" on profiles;
 -- create policy "admins can delete any profile" on profiles for delete using (is_admin());
+
+-- ---------------------------------------------------------------
+-- MIGRATION: adds realtime chat between a student and a teacher (the
+-- `messages` table, its RLS policies, and turning on Realtime for it).
+-- Safe to re-run.
+-- ---------------------------------------------------------------
+-- create table if not exists messages (
+--   id bigserial primary key,
+--   teacher_id uuid not null references teacher_profiles(profile_id) on delete cascade,
+--   student_id uuid not null references profiles(id) on delete cascade,
+--   sender_id uuid not null references profiles(id) on delete cascade,
+--   body text not null,
+--   created_at timestamptz not null default now()
+-- );
+-- alter table messages enable row level security;
+-- drop policy if exists "messages visible to the two participants" on messages;
+-- create policy "messages visible to the two participants" on messages for select using (auth.uid() = teacher_id or auth.uid() = student_id);
+-- drop policy if exists "participants can send messages" on messages;
+-- create policy "participants can send messages" on messages for insert with check (
+--   auth.uid() = sender_id and (auth.uid() = teacher_id or auth.uid() = student_id)
+-- );
+-- do $$
+-- begin
+--   if not exists (
+--     select 1 from pg_publication_tables
+--     where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'messages'
+--   ) then
+--     alter publication supabase_realtime add table messages;
+--   end if;
+-- end $$;
 
 -- ---------------------------------------------------------------
 -- email_exists: lets the "Forgot password" screen tell someone whether
