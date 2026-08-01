@@ -89,12 +89,19 @@ create table reviews (
 -- the teacher's dashboard), this is an ongoing thread — every row is one
 -- message, and the app subscribes to new rows via Supabase Realtime so
 -- both sides see replies appear instantly, with no refresh needed.
+-- reply_to lets a message quote an earlier one in the same thread.
+-- read_at is stamped once the recipient has actually read the message —
+-- see mark_messages_read() below, the only thing allowed to set it —
+-- and is what drives the persisted "Seen" marker (survives a refresh,
+-- unlike an in-memory-only read receipt would).
 create table messages (
   id bigserial primary key,
   teacher_id uuid not null references teacher_profiles(profile_id) on delete cascade,
   student_id uuid not null references profiles(id) on delete cascade,
   sender_id uuid not null references profiles(id) on delete cascade,
   body text not null,
+  reply_to bigint references messages(id) on delete set null,
+  read_at timestamptz,
   created_at timestamptz not null default now()
 );
 
@@ -212,6 +219,29 @@ after insert or update or delete on reviews
 for each row execute function update_teacher_rating();
 
 -- ---------------------------------------------------------------
+-- Persists the "Seen" marker in chat: marks every not-yet-read message
+-- FROM other_id TO the caller as read. security definer so it can write
+-- read_at without a broad UPDATE policy on messages — this function is
+-- the *only* way read_at ever gets set, and it only ever marks the
+-- *other* participant's messages as read, never the caller's own, so
+-- neither side can fake a "Seen" that didn't happen. The app calls this
+-- the moment a thread is opened, and again the instant a new message
+-- arrives while it's already open.
+-- ---------------------------------------------------------------
+create or replace function mark_messages_read(other_id uuid) returns void as $$
+  update messages
+  set read_at = now()
+  where read_at is null
+    and sender_id = other_id
+    and (
+      (teacher_id = auth.uid() and student_id = other_id)
+      or (student_id = auth.uid() and teacher_id = other_id)
+    );
+$$ language sql security definer;
+
+grant execute on function mark_messages_read(uuid) to authenticated;
+
+-- ---------------------------------------------------------------
 -- MIGRATION for projects that already ran the old version of this file
 -- (fixes teachers who show 5★ by default with 0 reviews, and adds the
 -- new maps_link column + reviews table). Safe to re-run.
@@ -281,6 +311,33 @@ for each row execute function update_teacher_rating();
 -- schema either). Safe to re-run.
 -- ---------------------------------------------------------------
 -- alter table profiles add column if not exists last_seen_at timestamptz;
+
+-- ---------------------------------------------------------------
+-- MIGRATION: lets a chat message quote an earlier one in the same
+-- thread. messages.id is a bigint (auto-incrementing), not a uuid, so
+-- the reference column has to match. Safe to re-run.
+-- ---------------------------------------------------------------
+-- alter table messages add column if not exists reply_to bigint references messages(id) on delete set null;
+
+-- ---------------------------------------------------------------
+-- MIGRATION: persists the chat "Seen" marker so it survives a refresh,
+-- instead of the old Broadcast-only ping that forgot everything the
+-- moment either side reloaded. Safe to re-run.
+-- ---------------------------------------------------------------
+-- alter table messages add column if not exists read_at timestamptz;
+--
+-- create or replace function mark_messages_read(other_id uuid) returns void as $$
+--   update messages
+--   set read_at = now()
+--   where read_at is null
+--     and sender_id = other_id
+--     and (
+--       (teacher_id = auth.uid() and student_id = other_id)
+--       or (student_id = auth.uid() and teacher_id = other_id)
+--     );
+-- $$ language sql security definer;
+--
+-- grant execute on function mark_messages_read(uuid) to authenticated;
 
 -- ---------------------------------------------------------------
 -- email_exists: lets the "Forgot password" screen tell someone whether

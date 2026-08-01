@@ -507,110 +507,15 @@ let ADMIN_TEACHERS = [];    // every teacher profile, for the admin panel
 let ADMIN_STUDENTS = [];    // every student profile, for the admin panel
 let adminDataStatus = 'idle'; // idle | loading | ready | error
 
-/* =========================================================
-   ROUTING — gives every view a real URL (via the hash, so it
-   still works on a static host like GitHub Pages with no
-   server-side rewrites needed). This means:
-   - Refreshing the page reopens the same screen instead of
-     bouncing back to the homepage.
-   - Chrome's back/forward buttons move between screens.
-   - Links can be shared/bookmarked to a specific page.
-========================================================= */
-const VIEW_ROUTES = {
-  home: '/', browse: '/browse',
-  studentAuth: '/parents/login', studentDashboard: '/parents/dashboard',
-  teacherHome: '/teachers', teacherAuth: '/teachers/login',
-  teacherDashboard: '/teachers/dashboard', teacherOnboarding: '/teachers/onboarding',
-  adminAuth: '/admin/login', adminDashboard: '/admin/dashboard',
-};
-let ignoreNextHashChange = false;
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-function slugify(str){
-  return (str||'').toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/(^-+|-+$)/g,'');
-}
-// Same-named teachers get numbered in a stable order (by id) so the same
-// teacher always resolves to the same number, regardless of query order.
-function teachersWithSlug(slug){
-  return TEACHERS.filter(t => slugify(t.name)===slug).sort((a,b)=> a.id.localeCompare(b.id));
-}
-
-function hashForView(view, st){
-  if(view==='teacherProfile'){
-    const t = TEACHERS.find(x => x.id === st.selectedTeacherId);
-    if(!t) return '#/teacher/' + encodeURIComponent(st.selectedTeacherId || ''); // teacher list not loaded yet
-    const slug = slugify(t.name) || 'teacher';
-    const dupes = teachersWithSlug(slug);
-    if(dupes.length <= 1) return '#/teacher/' + encodeURIComponent(slug);
-    const idx = dupes.findIndex(x=>x.id===t.id) + 1;
-    return '#/teacher/' + encodeURIComponent(slug) + '/' + idx;
-  }
-  return '#' + (VIEW_ROUTES[view] || '/');
-}
-function viewFromHash(hash){
-  const path = (hash||'').replace(/^#/, '') || '/';
-  if(path.startsWith('/teacher/')){
-    // may be a full uuid (older links), "ritu-sharma", or "ritu-sharma/2"
-    // — resolved once the teacher list has loaded, see resolvePendingTeacherSlug()
-    return { view:'teacherProfile', selectedTeacherId: decodeURIComponent(path.slice('/teacher/'.length).replace(/\/$/,'')) };
-  }
-  const found = Object.keys(VIEW_ROUTES).find(k => VIEW_ROUTES[k]===path);
-  return { view: found || 'home' };
-}
-function setHash(view, st){
-  const target = hashForView(view, st);
-  if(location.hash === target) return;
-  ignoreNextHashChange = true;
-  location.hash = target;
-}
-// Once TEACHERS has loaded, turns a slug (or an older raw-uuid link) in the
-// URL into the real teacher id, rewrites the address bar to the pretty
-// slug form, and loads that teacher's reviews. Bounces to Browse if
-// nothing matches.
-function resolvePendingTeacherSlug(){
-  if(state.view !== 'teacherProfile' || !state.selectedTeacherId) return;
-  if(UUID_RE.test(state.selectedTeacherId)){
-    setHash('teacherProfile', state); // normalize old raw-uuid links to the pretty slug
-    ensureTeacherReviews(state.selectedTeacherId);
-    return;
-  }
-  if(TEACHERS.some(t => t.id === state.selectedTeacherId)){
-    ensureTeacherReviews(state.selectedTeacherId);
-    return;
-  }
-  const [slugPart, idxPart] = state.selectedTeacherId.split('/');
-  const dupes = teachersWithSlug(slugPart);
-  let found = null;
-  if(dupes.length === 1) found = dupes[0];
-  else if(dupes.length > 1) found = dupes[(idxPart ? parseInt(idxPart,10) : 1) - 1] || dupes[0];
-  if(found){
-    state.selectedTeacherId = found.id;
-    setHash('teacherProfile', state);
-    ensureTeacherReviews(found.id);
-  }else{
-    state.view = 'browse';
-    setHash('browse', state);
-  }
-}
-// Fires on the browser's back/forward buttons, and on any manual hash edit.
-window.addEventListener('hashchange', ()=>{
-  if(ignoreNextHashChange){ ignoreNextHashChange = false; return; }
-  const parsed = viewFromHash(location.hash);
-  const extra = parsed.selectedTeacherId ? {selectedTeacherId: parsed.selectedTeacherId, selectedTeacherFrom:'home'} : null;
-  nav(parsed.view, extra, {fromHash:true});
-});
-
-
-function nav(view, extra, opts){
+function nav(view, extra){
   state.view = view;
   if(extra) Object.assign(state, extra);
   window.scrollTo({top:0, behavior:'smooth'});
   if(view==='home' || view==='browse' || view==='teacherProfile') ensureTeachers();
-  if(view==='teacherProfile' && state.selectedTeacherId && UUID_RE.test(state.selectedTeacherId)) ensureTeacherReviews(state.selectedTeacherId);
+  if(view==='teacherProfile' && state.selectedTeacherId) ensureTeacherReviews(state.selectedTeacherId);
   if(view==='studentDashboard') ensureStudentData();
   if(view==='teacherDashboard') ensureTeacherData();
   if(view==='adminDashboard') ensureAdminData();
-  if(!opts || !opts.fromHash) setHash(view, state);
   render();
 }
 
@@ -864,19 +769,7 @@ async function boot(){
   // support ?teacher=<id> deep links (e.g. shared from a teacher's dashboard)
   const params = new URLSearchParams(location.search);
   const sharedTeacher = params.get('teacher');
-  if(sharedTeacher){
-    state.view = 'teacherProfile'; state.selectedTeacherId = sharedTeacher; state.selectedTeacherFrom = 'home';
-    setHash('teacherProfile', state);
-  }else if(location.hash){
-    // restores whichever screen was open before a refresh, and is also
-    // what a shared/bookmarked link like #/teacher/<id> opens directly to
-    const parsed = viewFromHash(location.hash);
-    state.view = parsed.view;
-    if(parsed.selectedTeacherId){ state.selectedTeacherId = parsed.selectedTeacherId; state.selectedTeacherFrom = 'home'; }
-  }else{
-    // no hash yet on first-ever visit — write one so refresh/back stay in sync from here on
-    setHash(state.view, state);
-  }
+  if(sharedTeacher){ state.view = 'teacherProfile'; state.selectedTeacherId = sharedTeacher; state.selectedTeacherFrom = 'home'; }
 
   ensureTeachers();
   render();
@@ -1134,7 +1027,6 @@ async function ensureTeachers(force){
       reviewList: [],
     }));
     teachersStatus = 'ready';
-    resolvePendingTeacherSlug();
   }catch(err){
     console.error('Failed to load teachers', err);
     teachersStatus = 'error';
@@ -2099,12 +1991,8 @@ async function ensureConversations(force){
     }
 
     const col = role==='teacher' ? 'teacher_id' : 'student_id';
-    const { data: msgs, error: msgErr } = await sb.from('messages').select('teacher_id, student_id, sender_id, body, created_at, read_at').eq(col, uid).order('created_at', {ascending:true});
+    const { data: msgs, error: msgErr } = await sb.from('messages').select('teacher_id, student_id, sender_id, body, created_at').eq(col, uid).order('created_at', {ascending:true});
     if(msgErr) throw msgErr;
-    // The thread I currently have open (if any) is always treated as read —
-    // its messages get marked read the moment it's opened (see loadChatMessages),
-    // but that write can lag a beat behind this query.
-    const openOtherId = (chatWidgetOpen && chatWidgetView==='thread') ? (role==='teacher' ? chatStudentId : chatTeacherId) : null;
     msgs.forEach(m=>{
       const otherId = role==='teacher' ? m.student_id : m.teacher_id;
       let p = partners.get(otherId);
@@ -2115,9 +2003,6 @@ async function ensureConversations(force){
       p.lastMessage = m.body;
       p.lastAt = m.created_at;
       p.lastMine = m.sender_id === uid;
-      // Recomputed on every message in order, so by the end this reflects
-      // only the most recent message's read status, per partner.
-      p.unread = otherId !== openOtherId && m.sender_id !== uid && !m.read_at;
     });
 
     // Resolve display names for any partner discovered only via messages
@@ -2151,7 +2036,7 @@ async function ensureConversations(force){
     const merged = new Map(myConversations.map(c=>[c.id, c]));
     partners.forEach((fresh, id)=>{
       const existing = merged.get(id);
-      merged.set(id, existing ? { ...existing, ...fresh } : fresh);
+      merged.set(id, existing ? { ...existing, ...fresh, unread: existing.unread } : fresh);
     });
     myConversations = [...merged.values()].sort((a,b)=> new Date(b.lastAt||0) - new Date(a.lastAt||0));
     conversationsStatus = 'ready';
@@ -3172,41 +3057,19 @@ document.addEventListener('click', (e)=>{
       break;
     case 'send-enquiry': {
       const msg = document.getElementById('enquiryMsg').value;
-      const teacherId = el.dataset.id, teacherName = el.dataset.name, studentId = state.session.user.id;
       setBtnLoading(el, true);
-      (async () => {
-        const { error } = await sb.from('enquiries').insert({ teacher_id: teacherId, student_id: studentId, message: msg });
-        if(error){ toast('❌ ' + error.message, 'err'); setBtnLoading(el, false); return; }
-        closeModal();
-        toast('✅ Enquiry sent to ' + teacherName + '!', 'ok');
-
-        // Only the first-ever contact with this teacher also gets posted as
-        // a real chat message — if a thread already exists, the enquiry
-        // still gets logged in the teacher's Enquiries tab, but doesn't
-        // duplicate itself into an already-ongoing conversation.
-        const { count } = await sb.from('messages')
-          .select('id', { count:'exact', head:true })
-          .eq('teacher_id', teacherId).eq('student_id', studentId);
-        const isFirstContact = !count;
-        if(isFirstContact){
-          await sb.from('messages').insert({ teacher_id: teacherId, student_id: studentId, sender_id: studentId, body: msg });
-        }
-
-        // Surface this teacher (and the message, if it's new) in the chat
-        // inbox right away, rather than waiting for the next full refresh.
-        const existing = myConversations.find(c=>c.id===teacherId);
-        if(existing){
-          if(isFirstContact){ existing.lastMessage = msg; existing.lastAt = new Date().toISOString(); existing.lastMine = true; }
-        }else{
-          myConversations.unshift({
-            id:teacherId, name:teacherName,
-            lastMessage: isFirstContact ? msg : null, lastAt: isFirstContact ? new Date().toISOString() : null,
-            lastMine: isFirstContact, unread:false, typing:false,
-          });
-        }
-        renderChatDock();
-        setBtnLoading(el, false);
-      })();
+      sb.from('enquiries').insert({ teacher_id: el.dataset.id, student_id: state.session.user.id, message: msg })
+        .then(({error})=>{
+          if(error){ toast('❌ ' + error.message, 'err'); return; }
+          closeModal();
+          toast('✅ Enquiry sent to ' + el.dataset.name + '!', 'ok');
+          // Surface this teacher in the chat inbox right away, rather than
+          // waiting for the next full conversations refresh.
+          if(!myConversations.some(c=>c.id===el.dataset.id)){
+            myConversations.unshift({ id:el.dataset.id, name:el.dataset.name, lastMessage:null, lastAt:null, lastMine:false, unread:false, typing:false });
+            renderChatDock();
+          }
+        }).finally(()=>setBtnLoading(el, false));
       break;
     }
     case 'enroll-now': {
