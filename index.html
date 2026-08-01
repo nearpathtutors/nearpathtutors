@@ -200,7 +200,20 @@ a{ color:inherit; text-decoration:none; }
 .modal{ width:100%; max-width:460px; max-height:88vh; overflow-y:auto; animation: modalIn .35s cubic-bezier(.2,.9,.3,1.15) both; padding:28px; }
 @keyframes modalIn{ from{ opacity:0; transform: translateY(30px) scale(0.96);} to{ opacity:1; transform:translateY(0) scale(1);} }
 
-/* ---------- corner chat dock (not a full-screen modal) ---------- */
+/* ---------- corner chat widget: collapsed bubble + expanded panel ---------- */
+.chat-bubble{
+  position:fixed; right:20px; bottom:20px; z-index:250;
+  width:56px; height:56px; border-radius:50%;
+  background:var(--primary); color:#fff; border:none;
+  font-size:23px; display:flex; align-items:center; justify-content:center;
+  cursor:pointer; box-shadow:0 10px 28px var(--shadow-card);
+  animation: modalIn .3s cubic-bezier(.2,.9,.3,1.15) both;
+}
+.chat-bubble-badge{
+  position:absolute; top:-2px; right:-2px; min-width:20px; height:20px; padding:0 5px;
+  border-radius:10px; background:#e63946; color:#fff; font-size:11px; font-weight:800;
+  display:flex; align-items:center; justify-content:center; border:2px solid var(--bg2);
+}
 .chat-dock{
   position:fixed; right:20px; bottom:20px; z-index:250;
   width:340px; max-width:calc(100vw - 32px);
@@ -211,6 +224,7 @@ a{ color:inherit; text-decoration:none; }
 }
 @media (max-width: 480px){
   .chat-dock{ right:10px; left:10px; bottom:10px; width:auto; max-width:none; height:min(480px, calc(100vh - 80px)); }
+  .chat-bubble{ right:16px; bottom:16px; }
 }
 
 /* ticket / class-slip signature element */
@@ -426,17 +440,22 @@ let myStudents = [];       // enrollments-as-students, for the logged-in teacher
 let myEnquiries = [];      // enquiries a teacher has received from students
 let teacherDataStatus = 'idle';
 
-// Realtime chat — one open thread at a time, between chatTeacherId and
-// chatStudentId. chatChannel is the live Supabase Realtime subscription
-// for whichever thread is currently open in the modal; it's torn down
-// whenever the chat modal closes so we don't keep listening in the
-// background.
-let chatMessages = [];
-let chatStatus = 'idle';   // idle | loading | ready | error
-let chatTeacherId = null;
-let chatStudentId = null;
-let chatOtherName = '';
-let chatChannel = null;
+// Realtime chat widget — a persistent corner launcher, visible on every
+// page while logged in as a teacher or student. Collapsed = a round
+// bubble with an unread badge; expanded = either the inbox (every
+// conversation) or a single open thread. One realtime subscription
+// (chatRealtimeChannel) covers every message for the whole session.
+let myConversations = [];        // [{id, name, lastMessage, lastAt, lastMine, unread}], one per conversation partner
+let conversationsStatus = 'idle'; // idle | loading | ready | error
+let chatWidgetOpen = false;       // false = just the bubble; true = expanded panel
+let chatWidgetView = 'inbox';     // 'inbox' | 'thread'
+let chatRealtimeChannel = null;   // single session-wide subscription, set up once per login
+
+let chatMessages = [];            // messages in the currently open thread
+let chatStatus = 'idle';          // idle | loading | ready | error
+let chatTeacherId = null;         // teacher_id of the currently open thread
+let chatStudentId = null;         // student_id of the currently open thread
+let chatOtherName = '';           // display name of the other person in the currently open thread
 
 let myReviews = [];         // reviews the logged-in student has already left, keyed by enrollment_id
 let teacherReviews = [];    // reviews shown on a teacher's public profile page
@@ -662,6 +681,7 @@ async function boot(){
     if(newUserId !== lastAuthUserId){
       await refreshProfile();
       studentDataStatus = 'idle'; teacherDataStatus = 'idle'; adminDataStatus = 'idle';
+      resetChatWidget();
       lastAuthUserId = newUserId;
     }
     if(authFlowInProgress) return;
@@ -1782,14 +1802,17 @@ function renderModal(){
   root.innerHTML = modalHTML ? `<div class="modal-backdrop" data-action="close-modal">${modalHTML}</div>` : '';
 }
 
-// The chat dock lives in its own fixed root (not modalRoot) so it floats
+// The chat widget lives in its own fixed root (not modalRoot) so it floats
 // in the corner without a full-screen backdrop, and so it doesn't get
 // wiped out by an unrelated openModal()/closeModal() elsewhere on the
-// site (e.g. opening the review modal while a chat is open).
+// site (e.g. opening the review modal while the widget is open).
 function renderChatDock(){
   let root = document.getElementById('chatDockRoot');
   if(!root){ root = document.createElement('div'); root.id='chatDockRoot'; document.body.appendChild(root); }
-  root.innerHTML = chatTeacherId ? chatDockHTML() : '';
+  const canChat = state.session && ['teacher','student'].includes(state.profile?.role);
+  if(!canChat){ root.innerHTML = ''; return; }
+  if(conversationsStatus==='idle') ensureConversations(); // first render after login — kick off the initial load
+  root.innerHTML = chatDockHTML();
 }
 
 function locationPromptModal(){
@@ -1821,27 +1844,191 @@ function enquiryModal(id){
 }
 
 /* =========================================================
-   REALTIME CHAT
-   One thread = one (teacher_id, student_id) pair, shown as a small dock
-   in the corner of the screen (see .chat-dock in <style>) rather than a
-   full-screen modal, so the rest of the site stays usable while it's
-   open. Opening it loads the existing history, then subscribes to a
-   Supabase Realtime channel so any new row either side inserts appears
-   instantly, without a refresh. The channel is torn down again whenever
-   the dock closes.
+   REALTIME CHAT WIDGET
+   A persistent corner launcher, mounted into #chatDockRoot (outside #app,
+   so it survives page navigation) whenever someone is logged in as a
+   teacher or student. Collapsed, it's a round bubble with an unread
+   badge; expanded, it shows either the inbox (every conversation —
+   including ones with no messages yet, e.g. right after sending an
+   enquiry) or a single open thread.
+
+   One Realtime subscription (chatRealtimeChannel) covers every message
+   for the whole session: a message for the open thread is appended live;
+   a message for any other conversation just updates that conversation's
+   inbox preview and unread badge.
 ========================================================= */
-function openChat(teacherId, studentId, otherName){
-  chatTeacherId = teacherId;
-  chatStudentId = studentId;
-  chatOtherName = otherName || 'them';
+
+// Builds the full conversation list for the logged-in teacher/student:
+// every enrollment, every enquiry (sent, if a student — received, if a
+// teacher), and every existing message thread, merged into one list keyed
+// by the other participant. Threads with no messages yet still show up
+// (as "Say hello 👋") because a sent enquiry alone should surface the
+// teacher in the student's inbox, per how this is meant to work.
+async function ensureConversations(force){
+  if(!state.session || !['teacher','student'].includes(state.profile?.role)) return;
+  if(conversationsStatus==='ready' && !force) return;
+  conversationsStatus = 'loading';
+  renderChatDock();
+  try{
+    const uid = state.session.user.id;
+    const role = state.profile.role;
+    const partners = new Map();
+
+    if(role==='teacher'){
+      await ensureTeacherData();
+      myStudents.forEach(s=> partners.set(s.studentId, { id:s.studentId, name:s.name, lastMessage:null, lastAt:null, lastMine:false, unread:false }));
+      myEnquiries.forEach(q=>{ if(!partners.has(q.studentId)) partners.set(q.studentId, { id:q.studentId, name:q.name, lastMessage:null, lastAt:null, lastMine:false, unread:false }); });
+    }else{
+      await ensureStudentData();
+      myEnrollments.forEach(e=> partners.set(e.teacherId, { id:e.teacherId, name:e.teacherName, lastMessage:null, lastAt:null, lastMine:false, unread:false }));
+      const { data: sent, error } = await sb.from('enquiries').select('teacher_id, teacher_profiles(profiles(full_name))').eq('student_id', uid);
+      if(error) throw error;
+      sent.forEach(q=>{
+        if(!partners.has(q.teacher_id)) partners.set(q.teacher_id, { id:q.teacher_id, name:q.teacher_profiles?.profiles?.full_name || 'Teacher', lastMessage:null, lastAt:null, lastMine:false, unread:false });
+      });
+    }
+
+    const col = role==='teacher' ? 'teacher_id' : 'student_id';
+    const { data: msgs, error: msgErr } = await sb.from('messages').select('teacher_id, student_id, sender_id, body, created_at').eq(col, uid).order('created_at', {ascending:true});
+    if(msgErr) throw msgErr;
+    msgs.forEach(m=>{
+      const otherId = role==='teacher' ? m.student_id : m.teacher_id;
+      let p = partners.get(otherId);
+      if(!p){
+        p = { id: otherId, name: null, lastMessage:null, lastAt:null, lastMine:false, unread:false };
+        partners.set(otherId, p);
+      }
+      p.lastMessage = m.body;
+      p.lastAt = m.created_at;
+      p.lastMine = m.sender_id === uid;
+    });
+
+    // Resolve display names for any partner discovered only via messages
+    // (no enquiry/enrollment on record) — e.g. a student who tapped
+    // "Chat now" straight from a teacher's profile without ever sending
+    // an enquiry, or a teacher whose very first exchange with a student
+    // arrived that way.
+    const unresolved = [...partners.values()].filter(p=>!p.name).map(p=>p.id);
+    if(unresolved.length){
+      const { data: people } = await sb.from('profiles').select('id, full_name').in('id', unresolved);
+      (people||[]).forEach(person=>{
+        const p = partners.get(person.id);
+        if(p) p.name = person.full_name || 'Someone';
+      });
+    }
+
+    // Merge into the existing list rather than replacing it outright, so a
+    // conversation opened just now via openChat() (before its first message
+    // has actually been sent, so it isn't in any of the tables above yet)
+    // doesn't get wiped out by this refresh.
+    const merged = new Map(myConversations.map(c=>[c.id, c]));
+    partners.forEach((fresh, id)=>{
+      const existing = merged.get(id);
+      merged.set(id, existing ? { ...existing, ...fresh, unread: existing.unread } : fresh);
+    });
+    myConversations = [...merged.values()].sort((a,b)=> new Date(b.lastAt||0) - new Date(a.lastAt||0));
+    conversationsStatus = 'ready';
+  }catch(err){
+    console.error('Failed to load conversations', err);
+    conversationsStatus = 'error';
+  }
+  renderChatDock();
+  subscribeSessionRealtime();
+}
+
+// One subscription per login, covering every message where I'm a
+// participant. Filtered server-side on my own id in the relevant column
+// (teacher_id if I'm a teacher, student_id if I'm a student) — Realtime
+// filters only support one column, and this always fully identifies "my"
+// messages since a given account is only ever one side of the table.
+function subscribeSessionRealtime(){
+  if(chatRealtimeChannel || !state.session) return; // already subscribed this session
+  const uid = state.session.user.id;
+  const role = state.profile.role;
+  const col = role==='teacher' ? 'teacher_id' : 'student_id';
+  chatRealtimeChannel = sb.channel(`session-messages-${uid}`)
+    .on('postgres_changes', { event:'INSERT', schema:'public', table:'messages', filter:`${col}=eq.${uid}` }, (payload)=>{
+      const m = payload.new;
+      const otherId = role==='teacher' ? m.student_id : m.teacher_id;
+      const openOtherId = role==='teacher' ? chatStudentId : chatTeacherId;
+      const isOpenThread = chatWidgetOpen && chatWidgetView==='thread' && otherId===openOtherId;
+
+      if(isOpenThread && !chatMessages.some(x=>x.id===m.id)){
+        chatMessages.push(m);
+        renderChatMessagesList();
+      }
+
+      let p = myConversations.find(c=>c.id===otherId);
+      if(!p){
+        p = { id:otherId, name: null, lastMessage:null, lastAt:null, lastMine:false, unread:false };
+        myConversations.unshift(p);
+        sb.from('profiles').select('full_name').eq('id', otherId).single().then(({data})=>{
+          p.name = data?.full_name || 'Someone';
+          renderChatDock();
+        });
+      }
+      p.lastMessage = m.body;
+      p.lastAt = m.created_at;
+      p.lastMine = m.sender_id === uid;
+      if(!isOpenThread && m.sender_id !== uid) p.unread = true;
+      myConversations.sort((a,b)=> new Date(b.lastAt||0) - new Date(a.lastAt||0));
+
+      if(!isOpenThread) renderChatDock(); // refresh the bubble badge / inbox list
+    })
+    .subscribe();
+}
+
+function teardownSessionRealtime(){
+  if(chatRealtimeChannel){ sb.removeChannel(chatRealtimeChannel); chatRealtimeChannel = null; }
+}
+
+// Resets all chat-widget state — called on logout, so the next person to
+// use this browser doesn't see a stale conversation list or an open thread.
+function resetChatWidget(){
+  teardownSessionRealtime();
+  myConversations = []; conversationsStatus = 'idle';
+  chatWidgetOpen = false; chatWidgetView = 'inbox';
+  chatMessages = []; chatStatus = 'idle';
+  chatTeacherId = null; chatStudentId = null; chatOtherName = '';
+}
+
+function toggleChatWidget(){
+  chatWidgetOpen = !chatWidgetOpen;
+  if(chatWidgetOpen && chatWidgetView==='thread' && !chatTeacherId) chatWidgetView = 'inbox';
+  renderChatDock();
+}
+
+// Opens a specific thread — either from the inbox list, or directly from
+// one of the "💬 Chat" buttons elsewhere on the site (teacher profile,
+// dashboards). otherId is whichever id ISN'T me: the student id if I'm a
+// teacher, the teacher id if I'm a student.
+function openThread(otherId, fallbackName){
+  const convo = myConversations.find(c=>c.id===otherId);
+  chatWidgetOpen = true;
+  chatWidgetView = 'thread';
+  chatOtherName = convo?.name || fallbackName || 'them';
+  if(state.profile.role==='teacher'){ chatTeacherId = state.session.user.id; chatStudentId = otherId; }
+  else { chatTeacherId = otherId; chatStudentId = state.session.user.id; }
+  if(convo) convo.unread = false;
   chatMessages = [];
   chatStatus = 'loading';
   renderChatDock();
   loadChatMessages();
+  ensureConversations(); // picks up the real record if this thread already exists, without dropping the optimistic one above if it doesn't yet
 }
 
-function closeChat(){
-  teardownChat();
+// Called by every "💬 Chat" button elsewhere on the site.
+function openChat(teacherId, studentId, otherName){
+  const otherId = state.profile?.role==='teacher' ? studentId : teacherId;
+  if(!myConversations.some(c=>c.id===otherId)){
+    myConversations.unshift({ id:otherId, name: otherName || 'them', lastMessage:null, lastAt:null, lastMine:false, unread:false });
+  }
+  openThread(otherId, otherName);
+}
+
+function backToInbox(){
+  chatWidgetView = 'inbox';
+  chatTeacherId = null; chatStudentId = null;
   renderChatDock();
 }
 
@@ -1857,35 +2044,9 @@ async function loadChatMessages(){
     console.error('Failed to load messages', err);
     chatStatus = 'error';
   }
-  if(!chatTeacherId) return; // the dock was closed again before this finished loading
+  if(chatWidgetView!=='thread') return; // navigated away from this thread before the fetch resolved
   renderChatDock();
   scrollChatToBottom();
-  subscribeChatRealtime();
-}
-
-// Subscribes to new INSERTs into `messages` for this exact thread. Filtered
-// server-side on teacher_id (a Realtime filter can only compare one column),
-// then the student_id is checked client-side in the callback so a chat with
-// a different student of the same teacher doesn't leak into this thread.
-function subscribeChatRealtime(){
-  teardownChat({keepOpen:true});
-  chatChannel = sb.channel(`messages-${chatTeacherId}-${chatStudentId}`)
-    .on('postgres_changes', { event:'INSERT', schema:'public', table:'messages', filter:`teacher_id=eq.${chatTeacherId}` }, (payload)=>{
-      if(payload.new.student_id !== chatStudentId) return;
-      if(chatMessages.some(m=>m.id===payload.new.id)) return; // already have it (e.g. our own optimistic insert's echo)
-      chatMessages.push(payload.new);
-      renderChatMessagesList();
-    })
-    .subscribe();
-}
-
-// Closes the realtime subscription for whatever thread is currently open.
-// Called whenever the dock closes, and just before opening a new thread's
-// subscription. keepOpen skips clearing the thread ids, for the "about to
-// open a fresh subscription for the same dock" case.
-function teardownChat({keepOpen} = {}){
-  if(chatChannel){ sb.removeChannel(chatChannel); chatChannel = null; }
-  if(!keepOpen){ chatTeacherId = null; chatStudentId = null; }
 }
 
 function scrollChatToBottom(){
@@ -1893,7 +2054,7 @@ function scrollChatToBottom(){
   if(el) el.scrollTop = el.scrollHeight;
 }
 
-// Re-renders just the message list (not the whole dock), so an incoming
+// Re-renders just the message list (not the whole widget), so an incoming
 // message doesn't blow away whatever the person is mid-typing in the input.
 function renderChatMessagesList(){
   const el = document.getElementById('chatMessagesList');
@@ -1916,11 +2077,39 @@ function chatMessagesHTML(){
   }).join('');
 }
 
-function chatDockHTML(){
-  return `<div class="glass chat-dock">
+function chatInboxHTML(){
+  const role = state.profile?.role;
+  return `
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-shrink:0;">
-      <h3 style="font-size:14.5px;">💬 ${chatOtherName}</h3>
-      <span style="cursor:pointer; font-size:20px; line-height:1; color:var(--text-dim);" data-action="close-chat">&times;</span>
+      <h3 style="font-size:14.5px;">💬 Messages</h3>
+      <span style="cursor:pointer; font-size:20px; line-height:1; color:var(--text-dim);" data-action="toggle-chat">&times;</span>
+    </div>
+    <div style="flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:4px;">
+      ${conversationsStatus==='loading' ? `<p class="muted" style="text-align:center; font-size:13px; margin:auto;">Loading…</p>` :
+        conversationsStatus==='error' ? `<p class="muted" style="text-align:center; font-size:13px; margin:auto;">Couldn't load your messages.</p>` :
+        !myConversations.length ? `<p class="muted" style="text-align:center; font-size:13px; margin:auto; padding:0 14px; line-height:1.6;">No messages yet.${role==='teacher' ? ' A conversation will show up here as soon as a parent sends you an enquiry.' : ' Send an enquiry, or tap "Chat now" on a teacher\'s profile, to start one.'}</p>` :
+        myConversations.map(c=>`
+        <div style="display:flex; align-items:center; gap:10px; padding:9px 8px; border-radius:12px; cursor:pointer; ${c.unread?'background:var(--divider-soft);':''}" data-action="open-thread" data-id="${c.id}">
+          <div style="width:36px; height:36px; border-radius:50%; background:var(--primary); color:#fff; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:13px; flex-shrink:0;">${escapeHtml((c.name||'?').slice(0,1).toUpperCase())}</div>
+          <div style="flex:1; min-width:0;">
+            <div style="display:flex; justify-content:space-between; gap:6px;">
+              <span style="font-size:13.5px; font-weight:${c.unread?'700':'600'}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(c.name)}</span>
+              ${c.lastAt ? `<span class="muted" style="font-size:10px; flex-shrink:0;">${new Date(c.lastAt).toLocaleDateString(undefined,{day:'numeric',month:'short'})}</span>` : ''}
+            </div>
+            <div class="muted" style="font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${c.lastMessage ? escapeHtml((c.lastMine?'You: ':'') + c.lastMessage) : 'Say hello 👋'}</div>
+          </div>
+          ${c.unread ? `<span style="width:8px; height:8px; border-radius:50%; background:var(--primary); flex-shrink:0;"></span>` : ''}
+        </div>`).join('')}
+    </div>
+  `;
+}
+
+function chatThreadHTML(){
+  return `
+    <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px; flex-shrink:0;">
+      <span style="cursor:pointer; font-size:19px; line-height:1; color:var(--text-dim);" data-action="back-to-inbox">←</span>
+      <h3 style="font-size:14.5px; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(chatOtherName)}</h3>
+      <span style="cursor:pointer; font-size:20px; line-height:1; color:var(--text-dim);" data-action="toggle-chat">&times;</span>
     </div>
     <div id="chatMessagesList" style="flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:10px; padding:2px 2px;">
       ${chatMessagesHTML()}
@@ -1930,9 +2119,18 @@ function chatDockHTML(){
         onkeydown="if(event.key==='Enter'){event.preventDefault(); document.querySelector('[data-action=\\'send-chat-message\\']').click();}"/>
       <button class="btn btn-primary" data-action="send-chat-message" style="flex-shrink:0; padding:0 14px;">➤</button>
     </div>
-  </div>`;
+  `;
 }
 
+function chatDockHTML(){
+  if(!chatWidgetOpen){
+    const unread = myConversations.filter(c=>c.unread).length;
+    return `<button class="chat-bubble" data-action="toggle-chat" aria-label="Open messages">
+      💬${unread ? `<span class="chat-bubble-badge">${unread>9?'9+':unread}</span>` : ''}
+    </button>`;
+  }
+  return `<div class="glass chat-dock">${chatWidgetView==='thread' ? chatThreadHTML() : chatInboxHTML()}</div>`;
+}
 
 function reviewModal(enrollmentId){
   const e = myEnrollments.find(x=>x.id===enrollmentId);
@@ -2103,6 +2301,7 @@ function render(){
     html = views[state.view]();
   }
   document.getElementById('app').innerHTML = html;
+  renderChatDock();
 }
 
 document.addEventListener('click', (e)=>{
@@ -2246,8 +2445,14 @@ document.addEventListener('click', (e)=>{
     case 'open-chat':
       openChat(el.dataset.teacher, el.dataset.student, el.dataset.name);
       break;
-    case 'close-chat':
-      closeChat();
+    case 'toggle-chat':
+      toggleChatWidget();
+      break;
+    case 'open-thread':
+      openThread(el.dataset.id);
+      break;
+    case 'back-to-inbox':
+      backToInbox();
       break;
     case 'send-chat-message': {
       const input = document.getElementById('chatInput');
@@ -2276,6 +2481,12 @@ document.addEventListener('click', (e)=>{
           if(error){ toast('❌ ' + error.message, 'err'); return; }
           closeModal();
           toast('✅ Enquiry sent to ' + el.dataset.name + '!', 'ok');
+          // Surface this teacher in the chat inbox right away, rather than
+          // waiting for the next full conversations refresh.
+          if(!myConversations.some(c=>c.id===el.dataset.id)){
+            myConversations.unshift({ id:el.dataset.id, name:el.dataset.name, lastMessage:null, lastAt:null, lastMine:false, unread:false });
+            renderChatDock();
+          }
         }).finally(()=>setBtnLoading(el, false));
       break;
     }
