@@ -554,6 +554,13 @@ let studentProfileDetail = { id: null, status: 'idle', profile: null, attendance
 let myStudentBatches = [];
 let studentBatchesStatus = 'idle';
 
+// The most recent dashboard-load failure (student/teacher/admin data
+// fetch), if any — captured so the error screen can show the real reason
+// instead of a generic message, and so an admin can see it on the
+// Diagnostics tab. Session-only: it resets on page reload, since it's
+// not written anywhere persistent.
+let lastDataError = null;
+
 const WEEKDAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 const GRADE_OPTIONS = ['Nursery','LKG','UKG','Grade 1','Grade 2','Grade 3','Grade 4','Grade 5','Grade 6','Grade 7','Grade 8','Grade 9','Grade 10','Grade 11','Grade 12','Undergraduate','Other'];
 const STREAM_OPTIONS = ['Science (PCM)','Science (PCB)','Science (PCMB)','Commerce','Arts / Humanities','Other'];
@@ -1270,6 +1277,7 @@ async function ensureStudentData(force){
   }catch(err){
     console.error('Failed to load student dashboard data', err);
     studentDataStatus = 'error';
+    lastDataError = { context:'Student dashboard', message: err.message||String(err), code: err.code||null, details: err.details||null, hint: err.hint||null, at: new Date().toISOString() };
   }
   render();
 }
@@ -1354,6 +1362,7 @@ async function ensureTeacherData(force){
   }catch(err){
     console.error('Failed to load teacher dashboard data', err);
     teacherDataStatus = 'error';
+    lastDataError = { context:'Teacher dashboard', message: err.message||String(err), code: err.code||null, details: err.details||null, hint: err.hint||null, at: new Date().toISOString() };
   }
   render();
 }
@@ -1496,6 +1505,7 @@ async function ensureAdminData(force){
   }catch(err){
     console.error('Failed to load admin data', err);
     adminDataStatus = 'error';
+    lastDataError = { context:'Admin panel', message: err.message||String(err), code: err.code||null, details: err.details||null, hint: err.hint||null, at: new Date().toISOString() };
   }
   render();
 }
@@ -2685,9 +2695,10 @@ function viewAdminDashboard(){
       <div class="pill ${state.adminTab==='analytics'?'active':''}" data-action="admin-tab" data-tab="analytics">📊 Analytics</div>
       <div class="pill ${state.adminTab==='teachers'?'active':''}" data-action="admin-tab" data-tab="teachers">🍎 Teachers (${ADMIN_TEACHERS.length})</div>
       <div class="pill ${state.adminTab==='students'?'active':''}" data-action="admin-tab" data-tab="students">👪 Students (${ADMIN_STUDENTS.length})</div>
+      <div class="pill ${state.adminTab==='diagnostics'?'active':''}" data-action="admin-tab" data-tab="diagnostics">🩺 Diagnostics${lastDataError ? ' <span class="notif-bell-badge" style="position:static; display:inline-flex; margin-left:4px;">!</span>' : ''}</div>
     </div>
 
-    ${state.adminTab==='analytics' ? adminAnalyticsView() : `
+    ${state.adminTab==='analytics' ? adminAnalyticsView() : state.adminTab==='diagnostics' ? adminDiagnosticsView() : `
     <div class="glass" style="padding:22px;">
       ${rows.length ? `<table class="data-table">
         <thead><tr><th>Name</th>${state.adminTab==='teachers' ? '<th>Category</th><th>Subjects</th><th>Rating</th>' : ''}<th>Joined</th><th></th></tr></thead>
@@ -2714,6 +2725,39 @@ function viewAdminDashboard(){
 // see the "admin-delete-review" action). All computed client-side from
 // ADMIN_TEACHERS/STUDENTS/ENROLLMENTS/PAYMENTS/ENQUIRIES/REVIEWS, which
 // ensureAdminData() loads together with the rest of the admin panel.
+// Shows the most recent dashboard-load failure, if any, so an admin
+// doesn't have to ask a teacher/student to open their browser console.
+// Session-only — nothing here is written to the database, so it only
+// covers failures that happened in THIS admin's own browser tab (an
+// admin can't see an error that happened on someone else's device). For
+// that, the person who hit the error still needs to check their own
+// browser's dev tools console (F12 → Console tab) and share what it says.
+function adminDiagnosticsView(){
+  return `
+  <div class="glass" style="padding:22px;">
+    <h3 style="font-size:15.5px; margin-bottom:6px;">🩺 Diagnostics</h3>
+    <p class="muted" style="font-size:12.5px; margin-bottom:18px; line-height:1.5;">
+      The most recent dashboard-load failure seen in this browser tab, if any. This does not track errors on other people's devices —
+      if a teacher or student reports a "Couldn't load dashboard" screen, they'll need to check their own browser's console (F12) for the exact reason.
+    </p>
+    ${lastDataError ? `
+    <div style="padding:16px; border-radius:12px; background:var(--divider-soft); border:1px solid var(--red);">
+      <div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; align-items:baseline;">
+        <div style="font-weight:700; font-size:14px;">${escapeHtml(lastDataError.context)}</div>
+        <div class="muted" style="font-size:11.5px;">${new Date(lastDataError.at).toLocaleString()}</div>
+      </div>
+      <div style="margin-top:10px; font-family:var(--mono); font-size:12.5px; word-break:break-word;">
+        ${lastDataError.code ? `<div class="muted" style="font-family:inherit;">Code: ${escapeHtml(lastDataError.code)}</div>` : ''}
+        <div style="margin-top:4px;">${escapeHtml(lastDataError.message)}</div>
+        ${lastDataError.details ? `<div class="muted" style="font-family:inherit; margin-top:6px;">Details: ${escapeHtml(lastDataError.details)}</div>` : ''}
+        ${lastDataError.hint ? `<div class="muted" style="font-family:inherit; margin-top:6px;">Hint: ${escapeHtml(lastDataError.hint)}</div>` : ''}
+      </div>
+    </div>
+    <button class="btn btn-ghost btn-sm" style="margin-top:14px;" data-action="clear-diagnostics">Clear</button>
+    ` : `<p class="muted" style="font-size:13.5px;">No errors recorded in this tab yet. 🎉</p>`}
+  </div>`;
+}
+
 function adminAnalyticsView(){
   const totalRevenue = ADMIN_PAYMENTS.reduce((s,p)=>s+(p.amount||0),0);
   const outstanding = ADMIN_ENROLLMENTS.filter(e=>e.status!=='paid').reduce((s,e)=>s+(e.fee||0),0);
@@ -4054,6 +4098,10 @@ function errorScreen(what){
       <div style="font-size:28px;">⚠️</div>
       <h3 style="margin-top:12px; font-size:17px;">Couldn't load ${what||'data'}</h3>
       <p class="muted" style="margin-top:6px; font-size:13.5px;">Check your connection and Supabase configuration, then try again.</p>
+      ${lastDataError ? `<div style="margin-top:16px; padding:12px 14px; border-radius:10px; background:var(--divider-soft); text-align:left; font-size:12px; font-family:var(--mono); word-break:break-word;">
+        <div class="muted" style="font-family:inherit; margin-bottom:4px;">Reason${lastDataError.code ? ' ('+lastDataError.code+')' : ''}:</div>
+        ${escapeHtml(lastDataError.message)}${lastDataError.hint ? `<div class="muted" style="font-family:inherit; margin-top:6px;">Hint: ${escapeHtml(lastDataError.hint)}</div>` : ''}
+      </div>` : ''}
       <button class="btn btn-primary" style="margin-top:18px;" data-action="retry-load">Try again</button>
     </div>
   </div>`;
@@ -4169,6 +4217,10 @@ document.addEventListener('click', (e)=>{
       break;
     case 'admin-tab':
       state.adminTab = el.dataset.tab;
+      render();
+      break;
+    case 'clear-diagnostics':
+      lastDataError = null;
       render();
       break;
     case 'admin-delete-profile': {
