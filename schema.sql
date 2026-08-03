@@ -7,6 +7,7 @@ create table profiles (
   role text not null check (role in ('student','teacher','admin')),
   full_name text not null,
   grade text,  -- a student's own grade/class (e.g. "Grade 8"), set from their dashboard; unused for teachers/admins
+  stream text,  -- for grade 11/12 students only (e.g. "Science (PCM)", "Commerce"); null otherwise
   created_at timestamptz not null default now(),
   last_seen_at timestamptz  -- stamped by the client every so often while the app is open; used to show "Online" (via Realtime Presence) or "Last seen …" in chat
 );
@@ -118,6 +119,7 @@ create table batches (
   teacher_id uuid not null references teacher_profiles(profile_id) on delete cascade,
   name text not null,
   grade text default '',
+  stream text default '',  -- only meaningful when grade is 11/12 (e.g. "Science (PCM)")
   subject text not null,
   days text[] not null default '{}',
   time text default '',
@@ -139,7 +141,9 @@ create table batch_students (
 -- 11) trial_requests: a student's request for a spot in a trial class for
 -- a specific batch. Created by the student (pending), then approved or
 -- declined by the teacher from their dashboard — both sides see the
--- status change live via Realtime.
+-- status change live via Realtime. response_message is whatever the
+-- teacher typed when responding (e.g. "See you Monday at 4!"), surfaced
+-- to the student as a notification.
 create table trial_requests (
   id bigserial primary key,
   batch_id bigint not null references batches(id) on delete cascade,
@@ -147,11 +151,40 @@ create table trial_requests (
   student_id uuid not null references profiles(id) on delete cascade,
   note text default '',
   status text not null default 'pending' check (status in ('pending','approved','declined')),
+  response_message text default '',
   created_at timestamptz not null default now(),
   responded_at timestamptz
 );
 
--- 12) site_settings: a small key/value store for site-wide toggles.
+-- 12) attendance: one row per student per batch per date. A teacher marks
+-- it from a batch's detail view; a student can see their own record.
+create table attendance (
+  id bigserial primary key,
+  batch_id bigint not null references batches(id) on delete cascade,
+  student_id uuid not null references profiles(id) on delete cascade,
+  date date not null default current_date,
+  status text not null default 'present' check (status in ('present','absent','late')),
+  marked_at timestamptz not null default now(),
+  unique(batch_id, student_id, date)
+);
+
+-- 13) notifications: things a teacher sends a student — a trial class
+-- being approved/declined (with their message attached), or a heads-up
+-- about a batch's timing changing or a class being cancelled. Streamed
+-- live via Realtime so a student's Notifications tab updates instantly.
+create table notifications (
+  id bigserial primary key,
+  student_id uuid not null references profiles(id) on delete cascade,
+  teacher_id uuid not null references teacher_profiles(profile_id) on delete cascade,
+  batch_id bigint references batches(id) on delete set null,
+  type text not null default 'general' check (type in ('trial_approved','trial_declined','batch_update','batch_cancelled','general')),
+  title text not null,
+  message text default '',
+  read_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+-- 14) site_settings: a small key/value store for site-wide toggles.
 -- Currently holds one row (key='maintenance', value={"enabled":bool}) that
 -- every visitor's page checks before rendering anything else. Publicly
 -- readable (any visitor needs to check it) but only an admin can change
@@ -180,6 +213,8 @@ alter table messages enable row level security;
 alter table batches enable row level security;
 alter table batch_students enable row level security;
 alter table trial_requests enable row level security;
+alter table attendance enable row level security;
+alter table notifications enable row level security;
 
 -- profiles: names are shown publicly (e.g. "with Ritu Sharma"), but only
 -- the owner can create/change their own row.
@@ -317,11 +352,32 @@ create policy "trial request visible to student or teacher" on trial_requests fo
 create policy "students can request a trial" on trial_requests for insert with check (auth.uid() = student_id);
 create policy "teacher can respond to a trial request" on trial_requests for update using (auth.uid() = teacher_id);
 
+-- attendance: visible to the teacher who owns the batch and to the
+-- student it's about; only the owning teacher can mark or change it.
+create policy "attendance visible to teacher or student" on attendance for select using (
+  student_id = auth.uid() or exists(select 1 from batches b where b.id = batch_id and b.teacher_id = auth.uid())
+);
+create policy "teachers mark attendance for their own batches" on attendance for insert with check (
+  exists(select 1 from batches b where b.id = batch_id and b.teacher_id = auth.uid())
+);
+create policy "teachers update attendance for their own batches" on attendance for update using (
+  exists(select 1 from batches b where b.id = batch_id and b.teacher_id = auth.uid())
+);
+
+-- notifications: a student only ever sees their own; only the teacher on
+-- the notification can create it; a student can update it themselves
+-- (used to mark it read).
+create policy "notifications visible to the student" on notifications for select using (auth.uid() = student_id);
+create policy "teachers can notify their own students" on notifications for insert with check (auth.uid() = teacher_id);
+create policy "students can mark their notifications read" on notifications for update using (auth.uid() = student_id) with check (auth.uid() = student_id);
+
 -- ---------------------------------------------------------------
 -- Realtime: stream new/updated `trial_requests` rows, so a teacher sees a
 -- new trial request appear the instant a student sends one, and a student
 -- sees the approve/decline the instant their teacher responds — both
--- without refreshing.
+-- without refreshing. Also stream new `notifications` rows, so a
+-- student's Notifications tab (and its unread badge) updates the instant
+-- a teacher approves/declines a trial or sends a batch announcement.
 -- ---------------------------------------------------------------
 do $$
 begin
@@ -330,6 +386,12 @@ begin
     where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'trial_requests'
   ) then
     alter publication supabase_realtime add table trial_requests;
+  end if;
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'notifications'
+  ) then
+    alter publication supabase_realtime add table notifications;
   end if;
 end $$;
 
@@ -585,6 +647,68 @@ grant execute on function mark_messages_read(uuid) to authenticated;
 --     where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'trial_requests'
 --   ) then
 --     alter publication supabase_realtime add table trial_requests;
+--   end if;
+-- end $$;
+
+-- ---------------------------------------------------------------
+-- MIGRATION: adds student stream (for grade 11/12), a teacher's response
+-- message on a trial request, per-batch attendance, and a notifications
+-- system (trial approved/declined with the teacher's message, plus batch
+-- timing-change/cancellation announcements) — streamed live via
+-- Realtime. Safe to re-run.
+-- ---------------------------------------------------------------
+-- alter table profiles add column if not exists stream text;
+-- alter table batches add column if not exists stream text default '';
+-- alter table trial_requests add column if not exists response_message text default '';
+--
+-- create table if not exists attendance (
+--   id bigserial primary key,
+--   batch_id bigint not null references batches(id) on delete cascade,
+--   student_id uuid not null references profiles(id) on delete cascade,
+--   date date not null default current_date,
+--   status text not null default 'present' check (status in ('present','absent','late')),
+--   marked_at timestamptz not null default now(),
+--   unique(batch_id, student_id, date)
+-- );
+-- alter table attendance enable row level security;
+-- drop policy if exists "attendance visible to teacher or student" on attendance;
+-- create policy "attendance visible to teacher or student" on attendance for select using (
+--   student_id = auth.uid() or exists(select 1 from batches b where b.id = batch_id and b.teacher_id = auth.uid())
+-- );
+-- drop policy if exists "teachers mark attendance for their own batches" on attendance;
+-- create policy "teachers mark attendance for their own batches" on attendance for insert with check (
+--   exists(select 1 from batches b where b.id = batch_id and b.teacher_id = auth.uid())
+-- );
+-- drop policy if exists "teachers update attendance for their own batches" on attendance;
+-- create policy "teachers update attendance for their own batches" on attendance for update using (
+--   exists(select 1 from batches b where b.id = batch_id and b.teacher_id = auth.uid())
+-- );
+--
+-- create table if not exists notifications (
+--   id bigserial primary key,
+--   student_id uuid not null references profiles(id) on delete cascade,
+--   teacher_id uuid not null references teacher_profiles(profile_id) on delete cascade,
+--   batch_id bigint references batches(id) on delete set null,
+--   type text not null default 'general' check (type in ('trial_approved','trial_declined','batch_update','batch_cancelled','general')),
+--   title text not null,
+--   message text default '',
+--   read_at timestamptz,
+--   created_at timestamptz not null default now()
+-- );
+-- alter table notifications enable row level security;
+-- drop policy if exists "notifications visible to the student" on notifications;
+-- create policy "notifications visible to the student" on notifications for select using (auth.uid() = student_id);
+-- drop policy if exists "teachers can notify their own students" on notifications;
+-- create policy "teachers can notify their own students" on notifications for insert with check (auth.uid() = teacher_id);
+-- drop policy if exists "students can mark their notifications read" on notifications;
+-- create policy "students can mark their notifications read" on notifications for update using (auth.uid() = student_id) with check (auth.uid() = student_id);
+-- do $$
+-- begin
+--   if not exists (
+--     select 1 from pg_publication_tables
+--     where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'notifications'
+--   ) then
+--     alter publication supabase_realtime add table notifications;
 --   end if;
 -- end $$;
 

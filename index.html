@@ -186,6 +186,12 @@ label.field-label{ display:block; font-size:12.5px; font-weight:600; color:var(-
 .stagger > *:nth-child(7){ animation-delay: .26s;} .stagger > *:nth-child(8){ animation-delay: .30s;}
 .view-transition{ animation: viewIn .45s cubic-bezier(.2,.9,.3,1) both; }
 @keyframes viewIn{ from{ opacity:0; transform: translateY(18px) scale(0.99);} to{ opacity:1; transform:translateY(0) scale(1);} }
+@keyframes skeletonPulse{ 0%{opacity:.5} 50%{opacity:1} 100%{opacity:.5} }
+.skel{ background:var(--divider-soft); border-radius:10px; animation: skeletonPulse 1.2s ease-in-out infinite; }
+.skel-line{ height:13px; border-radius:6px; }
+.skel-card{ height:78px; border-radius:16px; }
+@keyframes paneIn{ from{ opacity:0; transform: translateY(8px);} to{ opacity:1; transform:translateY(0);} }
+.pane-fade{ animation: paneIn .28s ease both; }
 a{ color:inherit; text-decoration:none; }
 .stars{ display:inline-flex; gap:2px; color: var(--amber); font-size:14px; letter-spacing:1px; }
 .divider-dashed{ border:none; border-top:2px dashed var(--scrollbar-thumb); margin:0; }
@@ -370,6 +376,8 @@ const state = {
   selectedTeacherFrom: 'home',  // 'home' | 'browse' — which page the teacher profile was opened from, for the back button
   filters: { category:'all', query:'', sortDistance:false },
   teacherTab: 'overview',
+  studentTab: 'overview',    // 'overview' | 'notifications' — which panel the student dashboard is showing
+  selectedBatchId: null,     // when set, the Batches tab shows that batch's detail view instead of the list
   studentAuthMode: 'login',   // 'login' | 'signup'
   teacherAuthMode: 'login',
   myLocation: null,      // { lat, lng } for the person browsing — used to auto-calc distance to each teacher
@@ -507,8 +515,38 @@ let audioCtx = null; // lazily created on first ping, reused after
 
 let myBatches = [];         // batches (classes) the logged-in teacher has created, with their student rosters
 let myTrialRequests = [];   // trial-class requests the logged-in teacher has received (pending + resolved)
+let batchAttendance = {};       // batchId -> [{studentId, date, status}], fetched on-demand when a batch's detail view is opened
+let batchAttendanceForId = null;
+let batchAttendanceStatus = 'idle';
 let myTrialBookings = [];   // trial-class requests the logged-in student has made
+let myNotifications = [];   // notifications for the logged-in student (trial responses, batch announcements)
 const WEEKDAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+const GRADE_OPTIONS = ['Nursery','LKG','UKG','Grade 1','Grade 2','Grade 3','Grade 4','Grade 5','Grade 6','Grade 7','Grade 8','Grade 9','Grade 10','Grade 11','Grade 12','Undergraduate','Other'];
+const STREAM_OPTIONS = ['Science (PCM)','Science (PCB)','Science (PCMB)','Commerce','Arts / Humanities','Other'];
+const STREAM_GRADES = new Set(['Grade 11','Grade 12']); // grades that show the stream dropdown
+
+// Renders a grade <select>, plus a stream <select> that only shows itself
+// (via a plain onchange toggle, no re-render needed) when grade 11/12 is
+// picked. Used for both a student's own profile and batch creation, so
+// grade values stay consistent between the two instead of free text.
+function gradeStreamPicker(idPrefix, currentGrade, currentStream){
+  return `
+    <div class="field"><label class="field-label">Grade</label>
+      <select class="input" id="${idPrefix}Grade" onchange="
+        document.getElementById('${idPrefix}StreamWrap').style.display = STREAM_GRADES.has(this.value) ? 'block' : 'none';
+      ">
+        <option value="">Select grade</option>
+        ${GRADE_OPTIONS.map(g=>`<option value="${g}" ${currentGrade===g?'selected':''}>${g}</option>`).join('')}
+      </select>
+    </div>
+    <div class="field" id="${idPrefix}StreamWrap" style="display:${STREAM_GRADES.has(currentGrade)?'block':'none'};">
+      <label class="field-label">Stream</label>
+      <select class="input" id="${idPrefix}Stream">
+        <option value="">Select stream</option>
+        ${STREAM_OPTIONS.map(s=>`<option value="${s}" ${currentStream===s?'selected':''}>${s}</option>`).join('')}
+      </select>
+    </div>`;
+}
 let myReviews = [];         // reviews the logged-in student has already left, keyed by enrollment_id
 let teacherReviews = [];    // reviews shown on a teacher's public profile page
 let teacherReviewsStatus = 'idle';
@@ -1133,7 +1171,7 @@ async function ensureTeachers(force){
   try{
     const { data, error } = await sb
       .from('teacher_profiles')
-      .select('*, profiles(full_name), schedule_slots(day,time,subj), batches(id,name,grade,subject,days,time,description,capacity,status)');
+      .select('*, profiles(full_name), schedule_slots(day,time,subj), batches(id,name,grade,stream,subject,days,time,description,capacity,status)');
     if(error) throw error;
     TEACHERS = data.map(t=>({
       id: t.profile_id,
@@ -1171,13 +1209,14 @@ async function ensureStudentData(force){
   studentDataStatus = 'loading';
   try{
     const uid = state.session.user.id;
-    const [{data:enrollments, error:e1}, {data:payments, error:e2}, {data:reviews, error:e3}, {data:trials, error:e4}] = await Promise.all([
+    const [{data:enrollments, error:e1}, {data:payments, error:e2}, {data:reviews, error:e3}, {data:trials, error:e4}, {data:notifs, error:e5}] = await Promise.all([
       sb.from('enrollments').select('*, teacher_profiles(profiles(full_name))').eq('student_id', uid).order('created_at',{ascending:false}),
       sb.from('payments').select('*').eq('student_id', uid).order('paid_at',{ascending:false}),
       sb.from('reviews').select('*').eq('student_id', uid),
-      sb.from('trial_requests').select('*, batches(name,subject,grade,days,time), teacher_profiles(profiles(full_name))').eq('student_id', uid).order('created_at',{ascending:false}),
+      sb.from('trial_requests').select('*, batches(name,subject,grade,stream,days,time), teacher_profiles(profiles(full_name))').eq('student_id', uid).order('created_at',{ascending:false}),
+      sb.from('notifications').select('*, teacher_profiles(profiles(full_name))').eq('student_id', uid).order('created_at',{ascending:false}),
     ]);
-    if(e1) throw e1; if(e2) throw e2; if(e3) throw e3; if(e4) throw e4;
+    if(e1) throw e1; if(e2) throw e2; if(e3) throw e3; if(e4) throw e4; if(e5) throw e5;
     myEnrollments = enrollments.map(e=>({
       id:e.id, teacherId:e.teacher_id, teacherName: e.teacher_profiles?.profiles?.full_name || 'Teacher',
       subject:e.subject, schedule:e.schedule, fee:e.fee, status:e.status, dueDate:e.due_date || '—',
@@ -1186,8 +1225,12 @@ async function ensureStudentData(force){
     myReviews = reviews;
     myTrialBookings = trials.map(r=>({
       id:r.id, teacherId:r.teacher_id, teacherName: r.teacher_profiles?.profiles?.full_name || 'Teacher',
-      batchName: r.batches?.name || 'Class', subject: r.batches?.subject || '', grade: r.batches?.grade || '',
-      days: (r.batches?.days||[]).join(', '), time: r.batches?.time || '', status:r.status, note:r.note, createdAt:r.created_at,
+      batchName: r.batches?.name || 'Class', subject: r.batches?.subject || '', grade: r.batches?.grade || '', stream: r.batches?.stream || '',
+      days: (r.batches?.days||[]).join(', '), time: r.batches?.time || '', status:r.status, note:r.note, responseMessage:r.response_message||'', createdAt:r.created_at,
+    }));
+    myNotifications = notifs.map(n=>({
+      id:n.id, teacherName: n.teacher_profiles?.profiles?.full_name || 'Your teacher', type:n.type,
+      title:n.title, message:n.message||'', readAt:n.read_at, createdAt:n.created_at,
     }));
     studentDataStatus = 'ready';
   }catch(err){
@@ -1207,7 +1250,7 @@ async function ensureTeacherData(force){
       sb.from('enrollments').select('*, profiles(full_name)').eq('teacher_id', uid).order('created_at',{ascending:false}),
       sb.from('enquiries').select('*, profiles(full_name)').eq('teacher_id', uid).order('created_at',{ascending:false}),
       sb.from('batches').select('*, batch_students(student_id, profiles(full_name))').eq('teacher_id', uid).order('created_at',{ascending:false}),
-      sb.from('trial_requests').select('*, profiles(full_name), batches(name,subject,grade,days,time)').eq('teacher_id', uid).order('created_at',{ascending:false}),
+      sb.from('trial_requests').select('*, profiles(full_name), batches(name,subject,grade,stream,days,time)').eq('teacher_id', uid).order('created_at',{ascending:false}),
     ]);
     if(error) throw error;
     if(eqErr) throw eqErr;
@@ -1222,13 +1265,13 @@ async function ensureTeacherData(force){
       message:q.message, createdAt:q.created_at,
     }));
     myBatches = batches.map(b=>({
-      id:b.id, name:b.name, grade:b.grade||'', subject:b.subject, days:b.days||[], time:b.time||'',
+      id:b.id, name:b.name, grade:b.grade||'', stream:b.stream||'', subject:b.subject, days:b.days||[], time:b.time||'',
       description:b.description||'', capacity:b.capacity, status:b.status,
       students: (b.batch_students||[]).map(bs=>({id:bs.student_id, name:bs.profiles?.full_name||'Student'})),
     }));
     myTrialRequests = trials.map(r=>({
       id:r.id, studentId:r.student_id, studentName: r.profiles?.full_name || 'A student', batchId:r.batch_id,
-      batchName: r.batches?.name || 'Class', subject: r.batches?.subject || '', grade: r.batches?.grade || '',
+      batchName: r.batches?.name || 'Class', subject: r.batches?.subject || '', grade: r.batches?.grade || '', stream: r.batches?.stream || '',
       days: (r.batches?.days||[]).join(', '), time: r.batches?.time || '', note:r.note, status:r.status, createdAt:r.created_at,
     }));
     teacherDataStatus = 'ready';
@@ -1237,6 +1280,33 @@ async function ensureTeacherData(force){
     teacherDataStatus = 'error';
   }
   render();
+}
+
+function todayStr(){ return new Date().toISOString().slice(0,10); }
+
+// Refreshes just the teacher dashboard's active tab pane in place — used
+// after actions that change data behind the currently-open tab (opening
+// a batch's detail view, its attendance loading, etc.) so the rest of
+// the dashboard never flickers.
+function refreshTeacherPane(){
+  const pane = document.getElementById('teacherTabPane');
+  if(pane && state.view==='teacherDashboard') pane.innerHTML = TEACHER_TAB_MAP[state.teacherTab]();
+}
+
+async function ensureBatchAttendance(batchId, force){
+  if(batchAttendanceForId===batchId && batchAttendanceStatus==='ready' && !force) return;
+  batchAttendanceForId = batchId;
+  batchAttendanceStatus = 'loading';
+  try{
+    const { data, error } = await sb.from('attendance').select('student_id, date, status').eq('batch_id', batchId);
+    if(error) throw error;
+    batchAttendance[batchId] = data.map(a=>({ studentId:a.student_id, date:a.date, status:a.status }));
+    batchAttendanceStatus = 'ready';
+  }catch(err){
+    console.error('Failed to load attendance', err);
+    batchAttendanceStatus = 'error';
+  }
+  refreshTeacherPane();
 }
 
 async function ensureTeacherReviews(teacherId, force){
@@ -1624,7 +1694,7 @@ function viewTeacherProfile(){
             ${t.batches.map(b=>`
             <div class="glass" style="padding:16px;">
               <div style="font-weight:700; font-size:14.5px;">${escapeHtml(b.name)}</div>
-              <div class="muted" style="font-size:12.5px; margin-top:4px;">${escapeHtml(b.subject)}${b.grade?' · '+escapeHtml(b.grade):''} · ${(b.days||[]).join(', ')||'Days TBC'} · ${escapeHtml(b.time)||'Time TBC'}</div>
+              <div class="muted" style="font-size:12.5px; margin-top:4px;">${escapeHtml(b.subject)}${b.grade?' · '+escapeHtml(b.grade):''}${b.stream?' · '+escapeHtml(b.stream):''} · ${(b.days||[]).join(', ')||'Days TBC'} · ${escapeHtml(b.time)||'Time TBC'}</div>
               ${b.description ? `<p class="muted" style="font-size:12.5px; margin-top:8px; line-height:1.5;">${escapeHtml(b.description)}</p>` : ''}
               <button class="btn btn-ghost btn-sm" style="margin-top:12px;" data-action="request-trial" data-batch="${b.id}" data-teacher="${t.id}" data-name="${escapeHtml(t.name)}">🎯 Request trial class</button>
             </div>`).join('')}
@@ -1732,17 +1802,31 @@ function viewStudentDashboard(){
   if(studentDataStatus!=='ready'){
     return `${navbar()}${studentDataStatus==='error' ? errorScreen('dashboard') : loadingScreen('your dashboard')}`;
   }
-  const totalDue = myEnrollments.filter(e=>e.status!=='paid').reduce((s,e)=>s+e.fee,0);
+  const unread = myNotifications.filter(n=>!n.readAt).length;
   return `
   ${navbar()}
   <div class="wrap view-transition" style="padding-top:32px;">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:24px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:22px;">
       <div>
         <div class="eyebrow">Student dashboard</div>
         <h1 style="font-size:26px; margin-top:4px;">Hi ${state.profile.full_name || 'there'} 👋</h1>
       </div>
     </div>
 
+    <div class="glass" style="padding:6px; display:inline-flex; gap:4px; margin-bottom:22px;">
+      <div class="sidebar-link ${state.studentTab==='overview'?'active':''}" style="padding:9px 16px;" data-action="student-tab" data-tab="overview">📊 Overview</div>
+      <div class="sidebar-link ${state.studentTab==='notifications'?'active':''}" style="padding:9px 16px; display:flex; align-items:center; gap:6px;" data-action="student-tab" data-tab="notifications">
+        🔔 Notifications ${unread ? `<span class="badge badge-blue" style="padding:2px 8px;">${unread}</span>` : ''}
+      </div>
+    </div>
+
+    <div id="studentTabPane">${state.studentTab==='notifications' ? studentNotificationsTab() : studentOverviewTab()}</div>
+  </div>`;
+}
+
+function studentOverviewTab(){
+  const totalDue = myEnrollments.filter(e=>e.status!=='paid').reduce((s,e)=>s+e.fee,0);
+  return `
     <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-bottom:24px;" class="grid-2">
       <div class="glass stat-card"><div class="eyebrow">Active enrollments</div><div class="stat-num">${myEnrollments.length}</div></div>
       <div class="glass stat-card"><div class="eyebrow">Fee due</div><div class="stat-num" style="color:${totalDue>0?'var(--red)':'var(--green)'}">₹${totalDue}</div></div>
@@ -1783,7 +1867,7 @@ function viewStudentDashboard(){
             <div style="display:flex; justify-content:space-between; align-items:center; padding:12px; border-radius:12px; background:var(--divider-soft); gap:12px; flex-wrap:wrap;">
               <div>
                 <div style="font-weight:600; font-size:13.5px;">${escapeHtml(r.batchName)}</div>
-                <div class="muted" style="font-size:12px;">with ${escapeHtml(r.teacherName)} · ${escapeHtml(r.subject)}${r.grade?' · '+escapeHtml(r.grade):''} · ${r.days||'Days TBC'} · ${escapeHtml(r.time)||'Time TBC'}</div>
+                <div class="muted" style="font-size:12px;">with ${escapeHtml(r.teacherName)} · ${escapeHtml(r.subject)}${r.grade?' · '+escapeHtml(r.grade):''}${r.stream?' · '+escapeHtml(r.stream):''} · ${r.days||'Days TBC'} · ${escapeHtml(r.time)||'Time TBC'}</div>
               </div>
               <span class="badge ${r.status==='approved'?'badge-green':r.status==='declined'?'badge-red':'badge-amber'}">${r.status.toUpperCase()}</span>
             </div>`).join('')}
@@ -1794,7 +1878,7 @@ function viewStudentDashboard(){
       <div>
         <div class="glass" style="padding:24px; margin-bottom:20px;">
           <h3 style="font-size:16px; margin-bottom:14px;">My profile</h3>
-          <div class="field" style="margin-bottom:12px;"><label class="field-label">Grade</label><input class="input" id="stGrade" value="${state.profile.grade||''}" placeholder="e.g. Grade 8"/></div>
+          ${gradeStreamPicker('st', state.profile.grade||'', state.profile.stream||'')}
           <button class="btn btn-primary btn-sm" data-action="save-student-grade">Save</button>
         </div>
         <div class="glass" style="padding:24px; margin-bottom:20px;">
@@ -1825,8 +1909,29 @@ function viewStudentDashboard(){
           </table>` : `<p class="muted" style="font-size:13px;">No payments recorded yet.</p>`}
         </div>
       </div>
-    </div>
-  </div>`;
+    </div>`;
+}
+
+function studentNotificationsTab(){
+  const icons = { trial_approved:'✅', trial_declined:'✖️', batch_update:'📅', batch_cancelled:'🚫', general:'🔔' };
+  return `
+    <div class="glass" style="padding:24px;">
+      <h3 style="font-size:16px; margin-bottom:16px;">Notifications</h3>
+      ${myNotifications.length ? `<div style="display:flex; flex-direction:column; gap:10px;">
+        ${myNotifications.map(n=>`
+        <div style="display:flex; gap:12px; padding:14px; border-radius:12px; background:${n.readAt?'var(--divider-soft)':'#6C5CE711'}; border:1px solid ${n.readAt?'transparent':'#6C5CE733'};">
+          <div style="font-size:20px;">${icons[n.type]||'🔔'}</div>
+          <div style="flex:1;">
+            <div style="display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap;">
+              <div style="font-weight:700; font-size:14px;">${escapeHtml(n.title)}</div>
+              <div class="muted" style="font-size:11.5px; white-space:nowrap;">${new Date(n.createdAt).toLocaleString()}</div>
+            </div>
+            <div class="muted" style="font-size:12px; margin-top:2px;">from ${escapeHtml(n.teacherName)}</div>
+            ${n.message ? `<p style="font-size:13.5px; margin-top:8px; line-height:1.5;">${escapeHtml(n.message)}</p>` : ''}
+          </div>
+        </div>`).join('')}
+      </div>` : `<p class="muted" style="font-size:13.5px;">Nothing here yet — you'll see it when a teacher responds to a trial request or sends an update about a class.</p>`}
+    </div>`;
 }
 
 /* =========================================================
@@ -1942,6 +2047,7 @@ function teacherStudents(){
 }
 
 function teacherBatches(){
+  if(state.selectedBatchId) return batchDetailView(state.selectedBatchId);
   return `
   <div class="glass" style="padding:22px;">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
@@ -1950,11 +2056,11 @@ function teacherBatches(){
     </div>
     ${myBatches.length ? `<div style="display:flex; flex-direction:column; gap:12px;">
       ${myBatches.map(b=>`
-      <div class="glass" style="padding:16px; ${b.status==='inactive'?'opacity:0.6;':''}">
+      <div class="glass" style="padding:16px; cursor:pointer; ${b.status==='inactive'?'opacity:0.6;':''}" data-action="open-batch-detail" data-id="${b.id}">
         <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
           <div>
             <div style="font-weight:700; font-size:14.5px;">${escapeHtml(b.name)} ${b.status==='inactive'?'<span class="badge" style="margin-left:6px;">Inactive</span>':''}</div>
-            <div class="muted" style="font-size:12.5px; margin-top:4px;">${escapeHtml(b.subject)}${b.grade?' · '+escapeHtml(b.grade):''} · ${(b.days||[]).join(', ')||'Days TBC'} · ${escapeHtml(b.time)||'Time TBC'}</div>
+            <div class="muted" style="font-size:12.5px; margin-top:4px;">${escapeHtml(b.subject)}${b.grade?' · '+escapeHtml(b.grade):''}${b.stream?' · '+escapeHtml(b.stream):''} · ${(b.days||[]).join(', ')||'Days TBC'} · ${escapeHtml(b.time)||'Time TBC'}</div>
             ${b.description ? `<p class="muted" style="font-size:12.5px; margin-top:6px; line-height:1.5;">${escapeHtml(b.description)}</p>` : ''}
           </div>
           <div style="display:flex; gap:8px; flex-wrap:wrap;">
@@ -1962,6 +2068,7 @@ function teacherBatches(){
           </div>
         </div>
         <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;">
+          <button class="btn btn-ghost btn-sm" data-action="open-batch-detail" data-id="${b.id}">🔍 View details</button>
           <button class="btn btn-ghost btn-sm" data-action="open-batch-students" data-id="${b.id}">👥 Manage students</button>
           <button class="btn btn-ghost btn-sm" data-action="open-batch-modal" data-id="${b.id}">✏️ Edit</button>
           <button class="btn btn-ghost btn-sm" data-action="delete-batch" data-id="${b.id}" data-name="${escapeHtml(b.name)}">🗑️ Delete</button>
@@ -1970,6 +2077,86 @@ function teacherBatches(){
     </div>` : `<p class="muted" style="font-size:13.5px;">No batches yet. Create one to organize students by grade, subject, and timing — students will see it on your profile and can request a trial class.</p>`}
   </div>`;
 }
+
+function attendanceCounts(batchId, studentId){
+  const arr = (batchAttendance[batchId]||[]).filter(a=>a.studentId===studentId);
+  return {
+    present: arr.filter(a=>a.status==='present').length,
+    absent: arr.filter(a=>a.status==='absent').length,
+    late: arr.filter(a=>a.status==='late').length,
+    today: arr.find(a=>a.date===todayStr())?.status || null,
+  };
+}
+
+function batchDetailView(batchId){
+  const b = myBatches.find(x=>x.id===batchId);
+  if(!b) return teacherBatches();
+  if(batchAttendanceForId!==batchId || batchAttendanceStatus==='idle') { ensureBatchAttendance(batchId); }
+  const loadingAttendance = batchAttendanceForId!==batchId || batchAttendanceStatus==='loading';
+  const feeDue = b.students.filter(s=>{
+    const enr = myStudents.find(ms=>ms.studentId===s.id && ms.subject===b.subject);
+    return enr && enr.feeStatus!=='paid';
+  }).length;
+  return `
+  <div class="glass" style="padding:22px;">
+    <button class="btn btn-ghost btn-sm" style="margin-bottom:14px;" data-action="back-to-batches">← Back to batches</button>
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; margin-bottom:6px;">
+      <div>
+        <div style="font-weight:700; font-size:18px;">${escapeHtml(b.name)} ${b.status==='inactive'?'<span class="badge" style="margin-left:6px;">Inactive</span>':''}</div>
+        <div class="muted" style="font-size:13px; margin-top:4px;">${escapeHtml(b.subject)}${b.grade?' · '+escapeHtml(b.grade):''}${b.stream?' · '+escapeHtml(b.stream):''} · ${(b.days||[]).join(', ')||'Days TBC'} · ${escapeHtml(b.time)||'Time TBC'}</div>
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="btn btn-primary btn-sm" data-action="open-notify-batch" data-id="${b.id}">📣 Notify students</button>
+        <button class="btn btn-ghost btn-sm" data-action="open-batch-modal" data-id="${b.id}">✏️ Edit</button>
+      </div>
+    </div>
+    ${b.description ? `<p class="muted" style="font-size:13px; margin-top:8px; line-height:1.5;">${escapeHtml(b.description)}</p>` : ''}
+
+    <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin:18px 0;" class="grid-2">
+      <div class="glass stat-card" style="padding:16px;"><div class="eyebrow">Students</div><div class="stat-num" style="font-size:22px;">${b.students.length}${b.capacity?'/'+b.capacity:''}</div></div>
+      <div class="glass stat-card" style="padding:16px;"><div class="eyebrow">Fee due</div><div class="stat-num" style="font-size:22px; color:${feeDue>0?'var(--red)':'var(--green)'}">${feeDue}</div></div>
+      <div class="glass stat-card" style="padding:16px;"><div class="eyebrow">Marked today</div><div class="stat-num" style="font-size:22px;">${(batchAttendance[batchId]||[]).filter(a=>a.date===todayStr()).length}/${b.students.length}</div></div>
+    </div>
+
+    <h4 style="font-size:14px; margin-bottom:10px;">Students</h4>
+    ${!b.students.length ? `<p class="muted" style="font-size:13.5px;">No students in this batch yet — click "Manage students" from the batch list to add some.</p>` : `
+    <div style="display:flex; flex-direction:column; gap:8px;">
+      ${b.students.map(s=>{
+        const enr = myStudents.find(ms=>ms.studentId===s.id && ms.subject===b.subject);
+        const c = attendanceCounts(batchId, s.id);
+        return `<details style="border-radius:12px; background:var(--divider-soft); overflow:hidden;">
+          <summary style="cursor:pointer; padding:12px 14px; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; list-style:none;">
+            <span style="font-weight:600; font-size:13.5px;">${escapeHtml(s.name)}</span>
+            <span style="display:flex; gap:8px; align-items:center;">
+              ${loadingAttendance ? `<span class="skel skel-line" style="width:90px; display:inline-block;"></span>` : `<span class="muted" style="font-size:11.5px;">✅ ${c.present} · ❌ ${c.absent} · ⏰ ${c.late}</span>`}
+              ${enr ? `<span class="badge ${enr.feeStatus==='paid'?'badge-green':enr.feeStatus==='due'?'badge-amber':'badge-red'}" id="feeBadge-${batchId}-${s.id}">${enr.feeStatus.toUpperCase()}</span>` : `<span class="badge">NO ENROLLMENT</span>`}
+            </span>
+          </summary>
+          <div style="padding:14px; border-top:1px solid var(--glass-border); display:flex; flex-direction:column; gap:14px;">
+            <div>
+              <div class="field-label" style="margin-bottom:6px;">Today's attendance</div>
+              <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                ${['present','absent','late'].map(st=>`<button class="btn btn-sm ${c.today===st?'btn-primary':'btn-ghost'}" data-action="mark-attendance" data-batch="${batchId}" data-student="${s.id}" data-status="${st}">${st==='present'?'✅':st==='absent'?'❌':'⏰'} ${st[0].toUpperCase()+st.slice(1)}</button>`).join('')}
+              </div>
+              <div id="attCounts-${batchId}-${s.id}" class="muted" style="font-size:11.5px; margin-top:8px;">Present ${c.present} · Absent ${c.absent} · Late ${c.late}</div>
+            </div>
+            ${enr ? `<div>
+              <div class="field-label" style="margin-bottom:6px;">Fee — ₹${enr.fee}</div>
+              <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                ${['due','paid','overdue'].map(st=>`<button class="btn btn-sm ${enr.feeStatus===st?'btn-primary':'btn-ghost'}" data-action="set-fee-status" data-enrollment="${enr.enrollmentId}" data-batch="${batchId}" data-student="${s.id}" data-status="${st}">${st.toUpperCase()}</button>`).join('')}
+              </div>
+            </div>` : `<p class="muted" style="font-size:12.5px;">This student isn't formally enrolled for ${escapeHtml(b.subject)} yet, so there's no fee record to show.</p>`}
+            <div>
+              <button class="btn btn-ghost btn-sm" data-action="open-chat" data-teacher="${state.session.user.id}" data-student="${s.id}" data-name="${escapeHtml(s.name)}">💬 Chat</button>
+              <button class="btn btn-ghost btn-sm" data-action="remove-batch-student" data-batch="${batchId}" data-student="${s.id}" data-name="${escapeHtml(s.name)}">🗑️ Remove from batch</button>
+            </div>
+          </div>
+        </details>`;
+      }).join('')}
+    </div>`}
+  </div>`;
+}
+
 
 function teacherTrials(){
   const pending = myTrialRequests.filter(r=>r.status==='pending');
@@ -1984,11 +2171,11 @@ function teacherTrials(){
           <div style="font-weight:700; font-size:14.5px;">${escapeHtml(r.studentName)}</div>
           <span class="badge badge-amber">PENDING</span>
         </div>
-        <div class="muted" style="font-size:12.5px; margin-top:6px;">Wants a trial for <b style="color:var(--text)">${escapeHtml(r.batchName)}</b> — ${escapeHtml(r.subject)}${r.grade?' · '+escapeHtml(r.grade):''} · ${r.days||'Days TBC'} · ${escapeHtml(r.time)||'Time TBC'}</div>
+        <div class="muted" style="font-size:12.5px; margin-top:6px;">Wants a trial for <b style="color:var(--text)">${escapeHtml(r.batchName)}</b> — ${escapeHtml(r.subject)}${r.grade?' · '+escapeHtml(r.grade):''}${r.stream?' · '+escapeHtml(r.stream):''} · ${r.days||'Days TBC'} · ${escapeHtml(r.time)||'Time TBC'}</div>
         ${r.note ? `<p class="muted" style="font-size:13px; margin-top:8px; line-height:1.5;">"${escapeHtml(r.note)}"</p>` : ''}
         <div style="display:flex; gap:8px; margin-top:12px;">
-          <button class="btn btn-primary btn-sm" data-action="trial-respond" data-id="${r.id}" data-status="approved">✅ Approve</button>
-          <button class="btn btn-ghost btn-sm" data-action="trial-respond" data-id="${r.id}" data-status="declined">✖️ Decline</button>
+          <button class="btn btn-primary btn-sm" data-action="open-trial-respond" data-id="${r.id}" data-status="approved">✅ Approve</button>
+          <button class="btn btn-ghost btn-sm" data-action="open-trial-respond" data-id="${r.id}" data-status="declined">✖️ Decline</button>
           <button class="btn btn-ghost btn-sm" data-action="open-chat" data-teacher="${state.session.user.id}" data-student="${r.studentId}" data-name="${escapeHtml(r.studentName)}">💬 Chat</button>
         </div>
       </div>`).join('')}
@@ -2116,12 +2303,13 @@ function viewTeacherOnboarding(){
   </div>`;
 }
 
+const TEACHER_TAB_MAP = {overview:teacherOverview, students:teacherStudents, batches:teacherBatches, trials:teacherTrials, enquiries:teacherEnquiries, profile:teacherProfileEdit};
+
 function viewTeacherDashboard(){
   if(!state.session || state.profile?.role!=='teacher') return viewTeacherAuth();
   if(teacherDataStatus!=='ready'){
     return `${navbar()}${teacherDataStatus==='error' ? errorScreen('dashboard') : loadingScreen('your dashboard')}`;
   }
-  const tabMap = {overview:teacherOverview, students:teacherStudents, batches:teacherBatches, trials:teacherTrials, enquiries:teacherEnquiries, profile:teacherProfileEdit};
   return `
   ${navbar()}
   <div class="wrap view-transition" style="padding-top:32px;">
@@ -2132,10 +2320,61 @@ function viewTeacherDashboard(){
       </div>
     </div>
     <div class="dash-layout">
-      <div>${teacherSidebar()}</div>
-      <div>${tabMap[state.teacherTab]()}</div>
+      <div id="teacherSidebarPane">${teacherSidebar()}</div>
+      <div id="teacherTabPane" class="pane-fade">${TEACHER_TAB_MAP[state.teacherTab]()}</div>
     </div>
   </div>`;
+}
+
+// Skeleton shown in #teacherTabPane the instant a sidebar tab is clicked,
+// so switching tabs never feels like the whole dashboard reloaded — only
+// this pane (not the navbar, header, or sidebar) is ever touched.
+function teacherTabSkeleton(){
+  return `<div class="glass" style="padding:22px;">
+    <div class="skel skel-line" style="width:170px; margin-bottom:20px;"></div>
+    <div style="display:flex; flex-direction:column; gap:12px;">
+      <div class="skel skel-card"></div>
+      <div class="skel skel-card"></div>
+      <div class="skel skel-card"></div>
+    </div>
+  </div>`;
+}
+
+// Switches the teacher dashboard's active tab without re-rendering the
+// whole app — only #teacherSidebarPane (for the active-tab highlight) and
+// #teacherTabPane (the actual content) are touched, so the page never
+// visibly "reloads" when clicking between tabs. Shows a brief skeleton in
+// between so the swap always feels like something is happening, even
+// though the underlying data (loaded up front by ensureTeacherData) is
+// already in memory — except for Profile, which fetches fresh data.
+async function switchTeacherTab(tab){
+  if(state.teacherTab === tab) return;
+  state.teacherTab = tab;
+  state.selectedBatchId = null;
+  const sidebarPane = document.getElementById('teacherSidebarPane');
+  const pane = document.getElementById('teacherTabPane');
+  if(!pane){ render(); return; }
+  if(sidebarPane) sidebarPane.innerHTML = teacherSidebar();
+  pane.classList.remove('pane-fade');
+  pane.innerHTML = teacherTabSkeleton();
+  try{
+    if(tab==='profile'){
+      const { data, error } = await sb.from('teacher_profiles').select('*, schedule_slots(day,time,subj)').eq('profile_id', state.session.user.id).single();
+      if(error) throw error;
+      state.selectedTeacherProfile = data;
+    }else{
+      // A short, deliberate pause so the skeleton is perceptible even
+      // though this tab's data is already cached in memory.
+      await new Promise(res=>setTimeout(res, 200));
+    }
+  }catch(err){
+    toast('❌ ' + err.message, 'err');
+  }
+  if(state.teacherTab !== tab) return; // the user already switched to a different tab while this was loading
+  const freshPane = document.getElementById('teacherTabPane');
+  if(!freshPane) return;
+  freshPane.innerHTML = TEACHER_TAB_MAP[tab]();
+  freshPane.classList.add('pane-fade');
 }
 
 // Shown instead of the whole site (see render()'s gate near the top) to
@@ -2612,11 +2851,11 @@ function subscribeSessionRealtime(){
       // Only relevant for teachers — a student just requested a trial spot.
       if(role!=='teacher') return;
       const r = payload.new;
-      sb.from('trial_requests').select('*, profiles(full_name), batches(name,subject,grade,days,time)').eq('id', r.id).single().then(({data})=>{
+      sb.from('trial_requests').select('*, profiles(full_name), batches(name,subject,grade,stream,days,time)').eq('id', r.id).single().then(({data})=>{
         if(!data) return;
         const entry = {
           id:data.id, studentId:data.student_id, studentName: data.profiles?.full_name || 'A student', batchId:data.batch_id,
-          batchName: data.batches?.name || 'Class', subject: data.batches?.subject || '', grade: data.batches?.grade || '',
+          batchName: data.batches?.name || 'Class', subject: data.batches?.subject || '', grade: data.batches?.grade || '', stream: data.batches?.stream || '',
           days: (data.batches?.days||[]).join(', '), time: data.batches?.time || '', note:data.note, status:data.status, createdAt:data.created_at,
         };
         if(!myTrialRequests.some(x=>x.id===entry.id)) myTrialRequests.unshift(entry);
@@ -2628,15 +2867,35 @@ function subscribeSessionRealtime(){
       });
     })
     .on('postgres_changes', { event:'UPDATE', schema:'public', table:'trial_requests', filter:`student_id=eq.${uid}` }, (payload)=>{
-      // Only relevant for students — the teacher just approved/declined their request.
+      // Only relevant for students — the teacher just approved/declined their
+      // request. The toast itself comes from the matching `notifications`
+      // row (below) so there's only one notice per event, not two.
       if(role!=='student') return;
       const r = payload.new;
       const entry = myTrialBookings.find(x=>x.id===r.id);
       if(entry){
         entry.status = r.status;
-        toast(r.status==='approved' ? '✅ Your trial class was approved!' : (r.status==='declined' ? 'Your trial class request was declined' : 'Trial request updated'), r.status==='approved'?'ok':'info');
+        entry.responseMessage = r.response_message || '';
         if(state.view==='studentDashboard') render();
       }
+    })
+    .on('postgres_changes', { event:'INSERT', schema:'public', table:'notifications', filter:`student_id=eq.${uid}` }, (payload)=>{
+      // Only relevant for students — a teacher just sent them a
+      // notification (trial approved/declined, or a batch update).
+      if(role!=='student') return;
+      const n = payload.new;
+      sb.from('teacher_profiles').select('profiles(full_name)').eq('profile_id', n.teacher_id).single().then(({data})=>{
+        const entry = {
+          id:n.id, teacherName: data?.profiles?.full_name || 'Your teacher', type:n.type,
+          title:n.title, message:n.message||'', readAt:n.read_at, createdAt:n.created_at,
+        };
+        if(!myNotifications.some(x=>x.id===entry.id)) myNotifications.unshift(entry);
+        toast('🔔 ' + escapeHtml(entry.title), 'info', ()=>{
+          state.studentTab = 'notifications';
+          nav('studentDashboard');
+        });
+        if(state.view==='studentDashboard') render();
+      });
     })
     .subscribe();
 }
@@ -3220,10 +3479,8 @@ function batchModal(batchId){
   return `<div class="glass modal">
     <h3 style="font-size:18px; margin-bottom:18px;">${b ? 'Edit batch' : 'New batch'}</h3>
     <div class="field"><label class="field-label">Batch name</label><input class="input" id="bmName" value="${b?b.name:''}" placeholder="Weekday Algebra — Grade 8"/></div>
-    <div class="grid-2" style="gap:12px;">
-      <div class="field"><label class="field-label">Grade</label><input class="input" id="bmGrade" value="${b?b.grade:''}" placeholder="Grade 8"/></div>
-      <div class="field"><label class="field-label">Subject</label><input class="input" id="bmSubject" value="${b?b.subject:''}" placeholder="Mathematics"/></div>
-    </div>
+    ${gradeStreamPicker('bm', b?b.grade:'', b?b.stream:'')}
+    <div class="field"><label class="field-label">Subject</label><input class="input" id="bmSubject" value="${b?b.subject:''}" placeholder="Mathematics"/></div>
     <div class="field">
       <label class="field-label">Days of the week</label>
       <input type="hidden" id="bmDays" value="${selectedDays.join(',')}"/>
@@ -3278,17 +3535,54 @@ function batchStudentsModal(batchId){
   </div>`;
 }
 
+function notifyBatchModal(batchId){
+  const b = myBatches.find(x=>x.id===batchId);
+  if(!b) return '';
+  return `<div class="glass modal">
+    <h3 style="font-size:18px; margin-bottom:4px;">Notify students — ${escapeHtml(b.name)}</h3>
+    <p class="muted" style="font-size:13px; margin-bottom:18px;">Sends an instant notification to all ${b.students.length} student${b.students.length!==1?'s':''} in this batch.</p>
+    <div class="field"><label class="field-label">Type</label>
+      <select class="input" id="nbType">
+        <option value="batch_update">Timing / schedule change</option>
+        <option value="batch_cancelled">Class cancelled</option>
+        <option value="general">General announcement</option>
+      </select>
+    </div>
+    <div class="field"><label class="field-label">Title</label><input class="input" id="nbTitle" placeholder="e.g. Class moved to 5 PM this Friday"/></div>
+    <div class="field"><label class="field-label">Message (optional)</label><textarea class="input" id="nbMessage" rows="3" placeholder="Any extra details..."></textarea></div>
+    <div style="display:flex; gap:10px; margin-top:6px;">
+      <button class="btn btn-ghost btn-block" data-action="close-modal">Cancel</button>
+      <button class="btn btn-primary btn-block" data-action="submit-notify-batch" data-id="${batchId}">Send</button>
+    </div>
+  </div>`;
+}
+
 function trialRequestModal(batchId, teacherId, teacherName){
   const t = TEACHERS.find(x=>x.id===teacherId);
   const b = t?.batches.find(x=>x.id===batchId);
   if(!b) return '';
   return `<div class="glass modal">
     <h3 style="font-size:18px; margin-bottom:4px;">Request a trial class</h3>
-    <p class="muted" style="font-size:13px; margin-bottom:18px;">${escapeHtml(b.name)} with ${escapeHtml(teacherName)} — ${escapeHtml(b.subject)}${b.grade?' · '+escapeHtml(b.grade):''} · ${(b.days||[]).join(', ')||'Days TBC'} · ${escapeHtml(b.time)||'Time TBC'}</p>
+    <p class="muted" style="font-size:13px; margin-bottom:18px;">${escapeHtml(b.name)} with ${escapeHtml(teacherName)} — ${escapeHtml(b.subject)}${b.grade?' · '+escapeHtml(b.grade):''}${b.stream?' · '+escapeHtml(b.stream):''} · ${(b.days||[]).join(', ')||'Days TBC'} · ${escapeHtml(b.time)||'Time TBC'}</p>
     <div class="field"><label class="field-label">Note to the teacher (optional)</label><textarea class="input" id="trNote" rows="3" placeholder="Anything the teacher should know before your trial..."></textarea></div>
     <div style="display:flex; gap:10px; margin-top:6px;">
       <button class="btn btn-ghost btn-block" data-action="close-modal">Cancel</button>
       <button class="btn btn-primary btn-block" data-action="submit-trial-request" data-batch="${batchId}" data-teacher="${teacherId}" data-name="${escapeHtml(teacherName)}">Send request</button>
+    </div>
+  </div>`;
+}
+
+function trialRespondModal(trialId, status){
+  const r = myTrialRequests.find(x=>x.id===trialId);
+  if(!r) return '';
+  const approving = status==='approved';
+  return `<div class="glass modal">
+    <h3 style="font-size:18px; margin-bottom:4px;">${approving?'Approve':'Decline'} trial request</h3>
+    <p class="muted" style="font-size:13px; margin-bottom:18px;">${escapeHtml(r.studentName)} — ${escapeHtml(r.batchName)}${r.time?' · '+escapeHtml(r.time):''}</p>
+    <div class="field"><label class="field-label">Message to ${escapeHtml(r.studentName)} (optional)</label><textarea class="input" id="trrMessage" rows="3" placeholder="${approving?'See you Monday at 4 PM! Bring a notebook.':'Unfortunately this batch is full right now...'}"></textarea></div>
+    <div style="display:flex; gap:10px; margin-top:6px;">
+      <button class="btn btn-ghost btn-block" data-action="close-modal">Cancel</button>
+      <button class="btn ${approving?'btn-primary':'btn-ghost'} btn-block" data-action="submit-trial-response" data-id="${trialId}" data-status="${status}">${approving?'✅ Approve':'✖️ Decline'}</button>
     </div>
   </div>`;
 }
@@ -3759,13 +4053,31 @@ document.addEventListener('click', (e)=>{
       break;
     }
     case 'save-student-grade': {
-      const grade = document.getElementById('stGrade').value.trim();
+      const grade = document.getElementById('stGrade').value;
+      const stream = STREAM_GRADES.has(grade) ? document.getElementById('stStream').value : null;
       setBtnLoading(el, true);
-      sb.from('profiles').update({ grade }).eq('id', state.session.user.id).then(({error})=>{
+      sb.from('profiles').update({ grade, stream }).eq('id', state.session.user.id).then(({error})=>{
         if(error){ toast('❌ ' + error.message, 'err'); return; }
         state.profile.grade = grade;
+        state.profile.stream = stream;
         toast('✅ Grade saved', 'ok');
       }).finally(()=>setBtnLoading(el, false));
+      break;
+    }
+    case 'student-tab': {
+      const tab = el.dataset.tab;
+      state.studentTab = tab;
+      if(tab==='notifications'){
+        const unreadIds = myNotifications.filter(n=>!n.readAt).map(n=>n.id);
+        if(unreadIds.length){
+          const now = new Date().toISOString();
+          myNotifications.forEach(n=>{ if(!n.readAt) n.readAt = now; });
+          sb.from('notifications').update({ read_at: now }).in('id', unreadIds).then(({error})=>{
+            if(error) console.error('Failed to mark notifications read', error);
+          });
+        }
+      }
+      render();
       break;
     }
     case 'open-batch-modal':
@@ -3775,7 +4087,8 @@ document.addEventListener('click', (e)=>{
       const uid = state.session.user.id;
       const idRaw = el.dataset.id;
       const name = document.getElementById('bmName').value.trim();
-      const grade = document.getElementById('bmGrade').value.trim();
+      const grade = document.getElementById('bmGrade').value;
+      const stream = STREAM_GRADES.has(grade) ? document.getElementById('bmStream').value : '';
       const subject = document.getElementById('bmSubject').value.trim();
       const daysVal = document.getElementById('bmDays').value;
       const days = daysVal ? daysVal.split(',') : [];
@@ -3785,7 +4098,7 @@ document.addEventListener('click', (e)=>{
       const description = document.getElementById('bmDescription').value.trim();
       const status = document.getElementById('bmStatus').value;
       if(!name || !subject){ toast('Please fill in at least a name and subject', 'warn'); return; }
-      const payload = { teacher_id: uid, name, grade, subject, days, time, capacity, description, status };
+      const payload = { teacher_id: uid, name, grade, stream, subject, days, time, capacity, description, status };
       setBtnLoading(el, true);
       (idRaw
         ? sb.from('batches').update(payload).eq('id', parseInt(idRaw))
@@ -3830,11 +4143,100 @@ document.addEventListener('click', (e)=>{
       })().finally(()=>setBtnLoading(el, false));
       break;
     }
-    case 'trial-respond': {
-      const id = parseInt(el.dataset.id), status = el.dataset.status;
-      setBtnLoading(el, true);
-      sb.from('trial_requests').update({ status, responded_at: new Date().toISOString() }).eq('id', id).then(({error})=>{
+    case 'open-batch-detail':
+      state.selectedBatchId = parseInt(el.dataset.id);
+      refreshTeacherPane();
+      break;
+    case 'back-to-batches':
+      state.selectedBatchId = null;
+      refreshTeacherPane();
+      break;
+    case 'mark-attendance': {
+      const batchId = parseInt(el.dataset.batch), studentId = el.dataset.student, status = el.dataset.status;
+      const date = todayStr();
+      const group = el.parentElement;
+      group.querySelectorAll('[data-action="mark-attendance"]').forEach(btn=>{ btn.classList.remove('btn-primary'); btn.classList.add('btn-ghost'); });
+      el.classList.remove('btn-ghost'); el.classList.add('btn-primary');
+      sb.from('attendance').upsert({ batch_id: batchId, student_id: studentId, date, status }, { onConflict: 'batch_id,student_id,date' }).then(({error})=>{
         if(error){ toast('❌ ' + error.message, 'err'); return; }
+        const arr = batchAttendance[batchId] || (batchAttendance[batchId]=[]);
+        const idx = arr.findIndex(a=>a.studentId===studentId && a.date===date);
+        if(idx!==-1) arr[idx].status = status; else arr.push({studentId, date, status});
+        const countsEl = document.getElementById(`attCounts-${batchId}-${studentId}`);
+        if(countsEl){
+          const c = attendanceCounts(batchId, studentId);
+          countsEl.textContent = `Present ${c.present} · Absent ${c.absent} · Late ${c.late}`;
+        }
+      });
+      break;
+    }
+    case 'set-fee-status': {
+      const enrollmentId = parseInt(el.dataset.enrollment), status = el.dataset.status;
+      const group = el.parentElement;
+      group.querySelectorAll('[data-action="set-fee-status"]').forEach(btn=>{ btn.classList.remove('btn-primary'); btn.classList.add('btn-ghost'); });
+      el.classList.remove('btn-ghost'); el.classList.add('btn-primary');
+      sb.from('enrollments').update({ status }).eq('id', enrollmentId).then(({error})=>{
+        if(error){ toast('❌ ' + error.message, 'err'); return; }
+        const ms = myStudents.find(x=>x.enrollmentId===enrollmentId);
+        if(ms) ms.feeStatus = status;
+        const badge = document.getElementById(`feeBadge-${el.dataset.batch}-${el.dataset.student}`);
+        if(badge){
+          badge.textContent = status.toUpperCase();
+          badge.className = 'badge ' + (status==='paid'?'badge-green':status==='due'?'badge-amber':'badge-red');
+        }
+        toast('✅ Fee status updated', 'ok');
+      });
+      break;
+    }
+    case 'remove-batch-student': {
+      const batchId = parseInt(el.dataset.batch), studentId = el.dataset.student;
+      setBtnLoading(el, true);
+      sb.from('batch_students').delete().eq('batch_id', batchId).eq('student_id', studentId).then(({error})=>{
+        if(error){ toast('❌ ' + error.message, 'err'); return; }
+        toast('Removed ' + el.dataset.name + ' from the batch', 'ok');
+        ensureTeacherData(true);
+      }).finally(()=>setBtnLoading(el, false));
+      break;
+    }
+    case 'open-notify-batch':
+      openModal(notifyBatchModal(parseInt(el.dataset.id)));
+      break;
+    case 'submit-notify-batch': {
+      const batchId = parseInt(el.dataset.id);
+      const b = myBatches.find(x=>x.id===batchId);
+      const type = document.getElementById('nbType').value;
+      const title = document.getElementById('nbTitle').value.trim();
+      const message = document.getElementById('nbMessage').value.trim();
+      if(!title){ toast('Please add a title', 'warn'); return; }
+      if(!b.students.length){ toast('This batch has no students yet', 'warn'); return; }
+      setBtnLoading(el, true);
+      const rows = b.students.map(s=>({ student_id: s.id, teacher_id: state.session.user.id, batch_id: batchId, type, title, message }));
+      sb.from('notifications').insert(rows).then(({error})=>{
+        if(error){ toast('❌ ' + error.message, 'err'); return; }
+        closeModal();
+        toast('📣 Notified ' + b.students.length + ' student' + (b.students.length!==1?'s':''), 'ok');
+      }).finally(()=>setBtnLoading(el, false));
+      break;
+    }
+    case 'open-trial-respond':
+      openModal(trialRespondModal(parseInt(el.dataset.id), el.dataset.status));
+      break;
+    case 'submit-trial-response': {
+      const id = parseInt(el.dataset.id), status = el.dataset.status;
+      const r = myTrialRequests.find(x=>x.id===id);
+      const message = document.getElementById('trrMessage').value.trim();
+      setBtnLoading(el, true);
+      sb.from('trial_requests').update({ status, response_message: message, responded_at: new Date().toISOString() }).eq('id', id).then(async ({error})=>{
+        if(error){ toast('❌ ' + error.message, 'err'); return; }
+        if(r){
+          await sb.from('notifications').insert({
+            student_id: r.studentId, teacher_id: state.session.user.id, batch_id: r.batchId,
+            type: status==='approved' ? 'trial_approved' : 'trial_declined',
+            title: status==='approved' ? `Your trial for ${r.batchName} was approved!` : `Your trial request for ${r.batchName} was declined`,
+            message,
+          });
+        }
+        closeModal();
         toast(status==='approved' ? '✅ Trial approved' : 'Trial declined', status==='approved'?'ok':'info');
         ensureTeacherData(true);
       }).finally(()=>setBtnLoading(el, false));
@@ -3882,9 +4284,7 @@ document.addEventListener('click', (e)=>{
       toggleTheme(el);
       break;
     case 'teacher-tab':
-      state.teacherTab = el.dataset.tab;
-      if(el.dataset.tab==='profile') loadOwnTeacherProfile();
-      else render();
+      switchTeacherTab(el.dataset.tab);
       break;
     case 'copy-profile-link': {
       const link = location.origin + location.pathname + '?teacher=' + state.session.user.id;
