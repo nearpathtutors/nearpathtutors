@@ -404,7 +404,8 @@ const state = {
   myLocation: null,      // { lat, lng } for the person browsing — used to auto-calc distance to each teacher
   locatingMe: false,     // true while a geolocation request is in flight
   postLoginRedirect: null,   // { view, selectedTeacherId, selectedTeacherFrom, reopenEnquiryFor, reopenChatFor } — where (and what) to restore after logging in or signing up mid-action, anywhere on the site
-  adminTab: 'analytics',       // 'analytics' | 'teachers' | 'students' — which panel the admin panel is showing
+  adminTab: 'analytics',       // 'analytics' | 'teachers' | 'students' | 'enrollments' | 'enquiries' | 'broadcast' | 'diagnostics' — which panel the admin panel is showing
+  adminEnrollFilter: 'all',    // 'all' | 'due' | 'overdue' | 'paid' — filters the admin Enrollments tab
   maintenanceMode: false,    // mirrors site_settings.value.enabled — when true, every visitor except a logged-in admin sees the maintenance page instead of the site
 };
 try{
@@ -541,6 +542,7 @@ let batchAttendanceForId = null;
 let batchAttendanceStatus = 'idle';
 let myTrialBookings = [];   // trial-class requests the logged-in student has made
 let myNotifications = [];   // notifications for the logged-in student (trial responses, batch announcements)
+let myTeacherNotifications = [];   // notifications for the logged-in teacher (new enrollment, new enquiry, fee received, admin broadcasts)
 
 // Teacher-side: full profile detail view for one student (grade, every
 // attendance record, every assessment mark, across the teacher's own
@@ -1284,6 +1286,7 @@ async function ensureStudentData(force){
     myEnrollments = enrollments.map(e=>({
       id:e.id, teacherId:e.teacher_id, teacherName: e.teacher_profiles?.profiles?.full_name || 'Teacher',
       subject:e.subject, schedule:e.schedule, fee:e.fee, status:e.status, dueDate:e.due_date || '—',
+      enrolledAt: e.created_at,
     }));
     myPayments = payments;
     myReviews = reviews;
@@ -1349,22 +1352,25 @@ async function ensureTeacherData(force){
   teacherDataStatus = 'loading';
   try{
     const uid = state.session.user.id;
-    const [{data, error}, {data:enquiries, error:eqErr}, {data:batches, error:bErr}, {data:trials, error:trErr}] = await Promise.all([
+    const [{data, error}, {data:enquiries, error:eqErr}, {data:batches, error:bErr}, {data:trials, error:trErr}, {data:teacherNotifs, error:tnErr}] = await Promise.all([
       sb.from('enrollments').select('*, profiles(full_name, grade)').eq('teacher_id', uid).order('created_at',{ascending:false}),
       sb.from('enquiries').select('*, profiles(full_name)').eq('teacher_id', uid).order('created_at',{ascending:false}),
       sb.from('batches').select('*, batch_students(student_id, profiles(full_name))').eq('teacher_id', uid).order('created_at',{ascending:false}),
       sb.from('trial_requests').select('*, profiles(full_name), batches(name,subject,grade,stream,days,time)').eq('teacher_id', uid).order('created_at',{ascending:false}),
+      sb.from('teacher_notifications').select('*, profiles(full_name)').eq('teacher_id', uid).order('created_at',{ascending:false}),
     ]);
     if(error) throw error;
     if(eqErr) throw eqErr;
     if(bErr) throw bErr;
     if(trErr) throw trErr;
+    if(tnErr) throw tnErr;
     myStudents = data.map(e=>({
       enrollmentId:e.id, studentId:e.student_id, name: e.profiles?.full_name || 'Student',
       // a student's grade is set on their own profile (dashboard → My
       // profile), not per-enrollment — fall back to the enrollment's own
       // grade column only if the profile one was never set.
       grade: e.profiles?.grade || e.grade || '—', subject:e.subject, feeStatus:e.status, fee:e.fee, schedule:e.schedule,
+      enrolledAt: e.created_at,
     }));
     myEnquiries = enquiries.map(q=>({
       id:q.id, studentId:q.student_id, name: q.profiles?.full_name || 'A parent',
@@ -1380,6 +1386,10 @@ async function ensureTeacherData(force){
       id:r.id, studentId:r.student_id, studentName: r.profiles?.full_name || 'A student', batchId:r.batch_id,
       batchName: r.batches?.name || 'Class', subject: r.batches?.subject || '', grade: r.batches?.grade || '', stream: r.batches?.stream || '',
       days: (r.batches?.days||[]).join(', '), time: r.batches?.time || '', note:r.note, status:r.status, createdAt:r.created_at,
+    }));
+    myTeacherNotifications = teacherNotifs.map(n=>({
+      id:n.id, studentId:n.student_id, studentName: n.profiles?.full_name || 'A student', type:n.type,
+      title:n.title, message:n.message||'', readAt:n.read_at, createdAt:n.created_at,
     }));
     teacherDataStatus = 'ready';
   }catch(err){
@@ -1505,7 +1515,7 @@ async function ensureAdminData(force){
       sb.from('teacher_profiles').select('profile_id, category, subjects, fee_start, fee_unit, rating, reviews'),
       sb.from('enrollments').select('id, student_id, teacher_id, subject, fee, status, created_at'),
       sb.from('payments').select('id, student_id, amount, method, paid_at'),
-      sb.from('enquiries').select('id, teacher_id, student_id, created_at'),
+      sb.from('enquiries').select('id, teacher_id, student_id, message, created_at'),
       sb.from('reviews').select('id, teacher_id, student_id, rating, comment, created_at').order('created_at',{ascending:false}),
     ]);
     if(error) throw error;
@@ -1523,6 +1533,8 @@ async function ensureAdminData(force){
     ADMIN_ENQUIRIES = enquiryRows || [];
     const nameById = {};
     profiles.forEach(p=>{ nameById[p.id] = p.full_name; });
+    ADMIN_ENROLLMENTS = ADMIN_ENROLLMENTS.map(e=>({ ...e, studentName: nameById[e.student_id] || 'Unknown student', teacherName: nameById[e.teacher_id] || 'Unknown teacher' }));
+    ADMIN_ENQUIRIES = ADMIN_ENQUIRIES.map(q=>({ ...q, studentName: nameById[q.student_id] || 'Unknown student', teacherName: nameById[q.teacher_id] || 'Unknown teacher' }));
     ADMIN_REVIEWS = (reviewRows||[]).map(r=>({ ...r, teacherName: nameById[r.teacher_id] || 'Unknown teacher', studentName: nameById[r.student_id] || 'Unknown student' }));
     adminDataStatus = 'ready';
   }catch(err){
@@ -1639,7 +1651,7 @@ function navbar(){
         <div style="display:flex; gap:10px; align-items:center;">
           <div class="pill ${c==='customer'?'active':''}" data-action="switch-portal" data-portal="customer">👪 Parents</div>
           <div class="pill ${c==='teacher'?'active':''}" data-action="switch-portal" data-portal="teacher">🍎 Teachers</div>
-          ${loggedIn && state.profile?.role==='student' ? `<button id="notifBellBtn" class="btn btn-ghost btn-sm notif-bell" data-action="toggle-notif-drawer" title="Notifications" aria-label="Notifications">${notifBellInnerHTML()}</button>` : ''}
+          ${loggedIn && (state.profile?.role==='student' || state.profile?.role==='teacher') ? `<button id="notifBellBtn" class="btn btn-ghost btn-sm notif-bell" data-action="toggle-notif-drawer" title="Notifications" aria-label="Notifications">${notifBellInnerHTML()}</button>` : ''}
           <button class="btn btn-ghost btn-sm" data-action="toggle-theme" title="Switch to ${currentTheme()==='dark'?'light':'dark'} theme" aria-label="Toggle theme">${currentTheme()==='dark' ? '☀️' : '🌙'}</button>
           <button class="btn btn-ghost btn-sm" data-action="go-admin" title="Admin panel" aria-label="Admin panel">🛡️</button>
           ${loggedIn
@@ -2068,6 +2080,7 @@ function studentOverviewTab(){
                   <div>
                     <div style="font-weight:700; font-size:14.5px;">${e.subject}</div>
                     <div class="muted" style="font-size:12.5px;">with ${e.teacherName} · ${e.schedule||'schedule TBC'}</div>
+                    ${e.enrolledAt ? `<div class="muted" style="font-size:11px; margin-top:2px;">Enrolled on ${new Date(e.enrolledAt).toLocaleDateString()}</div>` : ''}
                   </div>
                   <div style="display:flex; align-items:center; gap:8px;">
                     <span class="badge ${e.status==='paid'?'badge-green':e.status==='due'?'badge-amber':'badge-red'}">${e.status.toUpperCase()}</span>
@@ -2259,7 +2272,7 @@ function teacherStudents(){
       </div>
     </div>
     ${filtered.length ? `<table class="data-table">
-      <thead><tr><th>Name</th><th>Grade</th><th>Subject</th><th>Fee status</th><th>Fee</th><th></th></tr></thead>
+      <thead><tr><th>Name</th><th>Grade</th><th>Subject</th><th>Fee status</th><th>Fee</th><th>Enrolled</th><th></th></tr></thead>
       <tbody>
         ${filtered.map(s=>`
         <tr style="cursor:pointer;" data-action="open-student-profile" data-id="${s.studentId}">
@@ -2268,6 +2281,7 @@ function teacherStudents(){
           <td class="muted">${s.subject}</td>
           <td><span class="badge ${s.feeStatus==='paid'?'badge-green':s.feeStatus==='due'?'badge-amber':'badge-red'}">${s.feeStatus.toUpperCase()}</span></td>
           <td class="muted">₹${s.fee}</td>
+          <td class="muted">${s.enrolledAt ? new Date(s.enrolledAt).toLocaleDateString() : '—'}</td>
           <td style="white-space:nowrap;">
             <button class="btn btn-ghost btn-sm" data-action="open-chat" data-teacher="${state.session.user.id}" data-student="${s.studentId}" data-name="${escapeHtml(s.name)}">💬 Chat</button>
             ${s.feeStatus!=='paid' ? `<button class="btn btn-ghost btn-sm" data-action="notify-fee" data-id="${s.enrollmentId}">🔔 Notify fee</button>` : ''}
@@ -2726,7 +2740,14 @@ function viewAdminDashboard(){
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:22px;">
       <div>
         <div class="eyebrow">Admin panel</div>
-        <h1 style="font-size:26px; margin-top:4px;">${state.adminTab==='analytics' ? 'Overview' : 'All profiles'}</h1>
+        <h1 style="font-size:26px; margin-top:4px;">${
+          state.adminTab==='analytics' ? 'Overview'
+          : state.adminTab==='enrollments' ? 'All enrollments'
+          : state.adminTab==='enquiries' ? 'All enquiries'
+          : state.adminTab==='broadcast' ? 'Send a broadcast'
+          : state.adminTab==='diagnostics' ? 'Diagnostics'
+          : 'All profiles'
+        }</h1>
       </div>
       <div style="display:flex; gap:8px;">
         <button class="btn btn-ghost btn-sm" data-action="admin-change-password">🔑 Change password</button>
@@ -2746,10 +2767,18 @@ function viewAdminDashboard(){
       <div class="pill ${state.adminTab==='analytics'?'active':''}" data-action="admin-tab" data-tab="analytics">📊 Analytics</div>
       <div class="pill ${state.adminTab==='teachers'?'active':''}" data-action="admin-tab" data-tab="teachers">🍎 Teachers (${ADMIN_TEACHERS.length})</div>
       <div class="pill ${state.adminTab==='students'?'active':''}" data-action="admin-tab" data-tab="students">👪 Students (${ADMIN_STUDENTS.length})</div>
+      <div class="pill ${state.adminTab==='enrollments'?'active':''}" data-action="admin-tab" data-tab="enrollments">📋 Enrollments (${ADMIN_ENROLLMENTS.length})</div>
+      <div class="pill ${state.adminTab==='enquiries'?'active':''}" data-action="admin-tab" data-tab="enquiries">✉️ Enquiries (${ADMIN_ENQUIRIES.length})</div>
+      <div class="pill ${state.adminTab==='broadcast'?'active':''}" data-action="admin-tab" data-tab="broadcast">📣 Broadcast</div>
       <div class="pill ${state.adminTab==='diagnostics'?'active':''}" data-action="admin-tab" data-tab="diagnostics">🩺 Diagnostics${lastDataError ? ' <span class="notif-bell-badge" style="position:static; display:inline-flex; margin-left:4px;">!</span>' : ''}</div>
     </div>
 
-    ${state.adminTab==='analytics' ? adminAnalyticsView() : state.adminTab==='diagnostics' ? adminDiagnosticsView() : `
+    ${state.adminTab==='analytics' ? adminAnalyticsView()
+      : state.adminTab==='diagnostics' ? adminDiagnosticsView()
+      : state.adminTab==='enrollments' ? adminEnrollmentsView()
+      : state.adminTab==='enquiries' ? adminEnquiriesView()
+      : state.adminTab==='broadcast' ? adminBroadcastView()
+      : `
     <div class="glass" style="padding:22px;">
       ${rows.length ? `<table class="data-table">
         <thead><tr><th>Name</th>${state.adminTab==='teachers' ? '<th>Category</th><th>Subjects</th><th>Rating</th>' : ''}<th>Joined</th><th></th></tr></thead>
@@ -2780,6 +2809,86 @@ function viewAdminDashboard(){
 // dashboard-load failure anywhere in the app (student, teacher, or admin)
 // writes a row there via reportError(), so an admin can see the reason
 // without asking the person to open their browser console.
+// The admin panel's Enrollments tab — every enrollment site-wide, with a
+// fee-status filter and a one-click CSV export for anyone who wants to
+// crunch the numbers outside the app.
+function adminEnrollmentsView(){
+  const filter = state.adminEnrollFilter || 'all';
+  const filtered = filter==='all' ? ADMIN_ENROLLMENTS : ADMIN_ENROLLMENTS.filter(e=>e.status===filter);
+  const sorted = [...filtered].sort((a,b)=> new Date(b.created_at) - new Date(a.created_at));
+  return `
+  <div class="glass" style="padding:22px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:16px;">
+      <h3 style="font-size:15.5px;">All enrollments (${ADMIN_ENROLLMENTS.length})</h3>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        ${['all','due','overdue','paid'].map(f=>`<div class="pill ${filter===f?'active':''}" data-action="admin-enroll-filter" data-filter="${f}">${f==='all'?'All':f.charAt(0).toUpperCase()+f.slice(1)}</div>`).join('')}
+        <button class="btn btn-ghost btn-sm" data-action="export-enrollments-csv">⬇️ Export CSV</button>
+      </div>
+    </div>
+    ${sorted.length ? `<table class="data-table">
+      <thead><tr><th>Student</th><th>Teacher</th><th>Subject</th><th>Fee</th><th>Status</th><th>Enrolled</th></tr></thead>
+      <tbody>
+        ${sorted.map(e=>`
+        <tr>
+          <td style="font-weight:600;">${escapeHtml(e.studentName)}</td>
+          <td>${escapeHtml(e.teacherName)}</td>
+          <td class="muted">${escapeHtml(e.subject)}</td>
+          <td class="muted">₹${e.fee||0}</td>
+          <td><span class="badge ${e.status==='paid'?'badge-green':e.status==='due'?'badge-amber':'badge-red'}">${e.status.toUpperCase()}</span></td>
+          <td class="muted">${new Date(e.created_at).toLocaleDateString()}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>` : `<p class="muted" style="font-size:13.5px;">No enrollments match this filter.</p>`}
+  </div>`;
+}
+
+// The admin panel's Enquiries tab — every first-contact message sent to
+// any teacher site-wide, most recent first. Useful for spotting teachers
+// who aren't responding, or gauging overall demand per subject/category.
+function adminEnquiriesView(){
+  const sorted = [...ADMIN_ENQUIRIES].sort((a,b)=> new Date(b.created_at) - new Date(a.created_at));
+  return `
+  <div class="glass" style="padding:22px;">
+    <h3 style="font-size:15.5px; margin-bottom:16px;">All enquiries (${ADMIN_ENQUIRIES.length})</h3>
+    ${sorted.length ? `<div style="display:flex; flex-direction:column; gap:10px;">
+      ${sorted.slice(0,200).map(q=>`
+      <div style="padding:12px; border-radius:10px; background:var(--divider-soft);">
+        <div style="display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap;">
+          <div style="font-weight:600; font-size:13.5px;">${escapeHtml(q.studentName)} → ${escapeHtml(q.teacherName)}</div>
+          <div class="muted" style="font-size:11.5px;">${new Date(q.created_at).toLocaleString()}</div>
+        </div>
+        ${q.message ? `<p style="font-size:12.5px; margin-top:6px; line-height:1.5;">${escapeHtml(q.message)}</p>` : ''}
+      </div>`).join('')}
+    </div>` : `<p class="muted" style="font-size:13.5px;">No enquiries yet.</p>`}
+  </div>`;
+}
+
+// The admin panel's Broadcast tab — send an instant notification (same
+// bell + drawer every teacher/student already has) to every account of a
+// chosen audience, without it being tied to any specific teacher. Good
+// for maintenance windows, policy changes, or general announcements.
+function adminBroadcastView(){
+  return `
+  <div class="glass" style="padding:22px; max-width:640px;">
+    <h3 style="font-size:15.5px; margin-bottom:6px;">📣 Send a broadcast</h3>
+    <p class="muted" style="font-size:12.5px; margin-bottom:18px;">
+      Delivers instantly to every account in the audience you pick — it shows up on their notification bell
+      just like any other update. Use sparingly; this reaches everyone at once.
+    </p>
+    <div class="field">
+      <label class="field-label">Audience</label>
+      <select class="input" id="bcAudience">
+        <option value="students">All students (${ADMIN_STUDENTS.length})</option>
+        <option value="teachers">All teachers (${ADMIN_TEACHERS.length})</option>
+        <option value="everyone">Everyone (${ADMIN_STUDENTS.length + ADMIN_TEACHERS.length})</option>
+      </select>
+    </div>
+    <div class="field"><label class="field-label">Title</label><input class="input" id="bcTitle" placeholder="e.g. Scheduled maintenance tonight"/></div>
+    <div class="field"><label class="field-label">Message (optional)</label><textarea class="input" id="bcMessage" rows="3" placeholder="Any extra detail…"></textarea></div>
+    <button class="btn btn-primary btn-block" data-action="send-broadcast">Send broadcast</button>
+  </div>`;
+}
+
 function adminDiagnosticsView(){
   if(siteLogsStatus==='idle') ensureSiteLogs();
   const loading = siteLogsStatus==='idle' || siteLogsStatus==='loading';
@@ -2971,13 +3080,17 @@ function renderChatDock(){
 
 // The notification bell's dropdown — mounted outside #app (like the chat
 // dock) so it survives full-page re-renders without losing its open/
-// closed state. Only ever shown for a logged-in student; a teacher has
-// nothing to open here since notifications only ever flow teacher→student.
+// closed state. Shown for a logged-in student (their own `notifications`)
+// or a logged-in teacher (their own `teacher_notifications`) — same bell,
+// same drawer, just pointed at a different list depending on role.
 // The bell icon + its unread-count badge — shared by the navbar's initial
 // render and updateNotifBellBadge() below, so the two never drift out of
 // sync with each other.
+function activeNotifList(){
+  return state.profile?.role==='teacher' ? myTeacherNotifications : myNotifications;
+}
 function notifBellInnerHTML(){
-  const count = myNotifications.filter(n=>!n.readAt).length;
+  const count = activeNotifList().filter(n=>!n.readAt).length;
   return `🔔${count ? `<span class="notif-bell-badge">${count}</span>` : ''}`;
 }
 
@@ -2989,14 +3102,33 @@ function updateNotifBellBadge(){
   if(btn) btn.innerHTML = notifBellInnerHTML();
 }
 
+const NOTIF_ICONS = {
+  trial_approved:'✅', trial_declined:'✖️', batch_update:'📅', batch_cancelled:'🚫', fee_reminder:'💰', assessment:'📝',
+  new_enrollment:'🎉', new_enquiry:'✉️', fee_paid:'💵', admin_broadcast:'📣', general:'🔔',
+};
+
+// Where clicking a given notification should land the person — the
+// "concerned page" for that type of update, per role.
+function notifTargetTab(n, role){
+  if(role==='teacher'){
+    if(n.type==='new_enrollment' || n.type==='fee_paid') return 'students';
+    if(n.type==='new_enquiry') return 'enquiries';
+    return 'overview';
+  }
+  if(n.type==='batch_update' || n.type==='batch_cancelled' || n.type==='assessment') return 'batches';
+  if(n.type==='trial_approved' || n.type==='trial_declined' || n.type==='fee_reminder') return 'overview';
+  return 'notifications';
+}
+
 function renderNotifDrawer(){
   let root = document.getElementById('notifDrawerRoot');
   if(!root){ root = document.createElement('div'); root.id='notifDrawerRoot'; document.body.appendChild(root); }
-  const canShow = state.session && state.profile?.role==='student' && state.notifDrawerOpen;
+  const role = state.profile?.role;
+  const canShow = state.session && (role==='student' || role==='teacher') && state.notifDrawerOpen;
   if(!canShow){ root.innerHTML = ''; return; }
-  const icons = { trial_approved:'✅', trial_declined:'✖️', batch_update:'📅', batch_cancelled:'🚫', fee_reminder:'💰', assessment:'📝', general:'🔔' };
-  const unread = myNotifications.filter(n=>!n.readAt).length;
-  root.innerHTML = `<div class="glass notif-drawer">
+  const list = activeNotifList();
+  const unread = list.filter(n=>!n.readAt).length;
+  root.innerHTML = `<div class="glass notif-drawer" data-notif-drawer>
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
       <h3 style="font-size:15px;">🔔 Notifications</h3>
       <div style="display:flex; gap:8px; align-items:center;">
@@ -3004,13 +3136,13 @@ function renderNotifDrawer(){
         <button class="btn btn-ghost btn-sm" data-action="toggle-notif-drawer" style="padding:4px 10px; font-size:11.5px;">✕</button>
       </div>
     </div>
-    ${myNotifications.length ? `<div style="display:flex; flex-direction:column; gap:8px;">
-      ${myNotifications.slice(0,30).map(n=>`
-      <div style="display:flex; gap:10px; padding:12px; border-radius:10px; background:${n.readAt?'var(--divider-soft)':'#6C5CE711'}; border:1px solid ${n.readAt?'transparent':'#6C5CE733'}; cursor:${n.readAt?'default':'pointer'};" ${n.readAt?'':`data-action="mark-notif-read" data-id="${n.id}"`}>
-        <div style="font-size:17px;">${icons[n.type]||'🔔'}</div>
+    ${list.length ? `<div style="display:flex; flex-direction:column; gap:8px;">
+      ${list.slice(0,30).map(n=>`
+      <div style="display:flex; gap:10px; padding:12px; border-radius:10px; background:${n.readAt?'var(--divider-soft)':'#6C5CE711'}; border:1px solid ${n.readAt?'transparent':'#6C5CE733'}; cursor:pointer;" data-action="open-notif" data-id="${n.id}">
+        <div style="font-size:17px;">${NOTIF_ICONS[n.type]||'🔔'}</div>
         <div style="flex:1; min-width:0;">
           <div style="font-weight:700; font-size:13px;">${escapeHtml(n.title)}</div>
-          <div class="muted" style="font-size:11px; margin-top:1px;">from ${escapeHtml(n.teacherName)} · ${new Date(n.createdAt).toLocaleString()}</div>
+          <div class="muted" style="font-size:11px; margin-top:1px;">from ${escapeHtml(role==='teacher' ? (n.studentName||'A student') : n.teacherName)} · ${new Date(n.createdAt).toLocaleString()}</div>
           ${n.message ? `<p style="font-size:12.5px; margin-top:6px; line-height:1.5;">${escapeHtml(n.message)}</p>` : ''}
         </div>
       </div>`).join('')}
@@ -3287,6 +3419,32 @@ function subscribeSessionRealtime(){
         // matter what page the student is currently looking at.
         render();
       });
+    })
+    .on('postgres_changes', { event:'INSERT', schema:'public', table:'teacher_notifications', filter:`teacher_id=eq.${uid}` }, (payload)=>{
+      // Only relevant for teachers — a student just enrolled, sent an
+      // enquiry, marked a fee paid, or an admin sent a broadcast.
+      if(role!=='teacher') return;
+      const n = payload.new;
+      const attachName = (name)=>{
+        const entry = {
+          id:n.id, studentName: name, type:n.type,
+          title:n.title, message:n.message||'', readAt:n.read_at, createdAt:n.created_at,
+        };
+        if(!myTeacherNotifications.some(x=>x.id===entry.id)) myTeacherNotifications.unshift(entry);
+        playNotifSound();
+        toast('🔔 ' + escapeHtml(entry.title), 'info', ()=>{
+          state.teacherTab = notifTargetTab(entry, 'teacher');
+          nav('teacherDashboard');
+        });
+        render();
+      };
+      if(n.student_id){
+        sb.from('profiles').select('full_name').eq('id', n.student_id).single().then(({data})=>{
+          attachName(data?.full_name || 'A student');
+        });
+      }else{
+        attachName('NearPath Tutors admin');
+      }
     })
     .subscribe();
 }
@@ -4035,6 +4193,26 @@ function trialRespondModal(trialId, status){
   </div>`;
 }
 
+function enrollConfirmModal(teacherId){
+  const t = TEACHERS.find(x=>x.id===teacherId);
+  const subject = t.subjects[0] || 'General';
+  const schedule = t.schedule[0] ? `${t.schedule[0].day} ${t.schedule[0].time}` : 'Schedule TBC';
+  return `<div class="glass modal">
+    <h3 style="font-size:18px; margin-bottom:4px;">Confirm enrollment</h3>
+    <p class="muted" style="font-size:13px; margin-bottom:18px;">Double-check the details before you enroll — you can message ${escapeHtml(t.name)} first if anything needs adjusting.</p>
+    <div style="background:var(--divider-soft); border-radius:12px; padding:16px; font-size:13.5px; display:flex; flex-direction:column; gap:8px;">
+      <div style="display:flex; justify-content:space-between;"><span class="muted">Teacher</span><strong>${escapeHtml(t.name)}</strong></div>
+      <div style="display:flex; justify-content:space-between;"><span class="muted">Subject</span><strong>${escapeHtml(subject)}</strong></div>
+      <div style="display:flex; justify-content:space-between;"><span class="muted">Schedule</span><strong>${escapeHtml(schedule)}</strong></div>
+      <div style="display:flex; justify-content:space-between;"><span class="muted">Starting fee</span><strong>${t.feeStart ? '₹'+t.feeStart+(t.feeUnit||'') : '—'}</strong></div>
+    </div>
+    <div style="display:flex; gap:10px; margin-top:18px;">
+      <button class="btn btn-ghost btn-block" data-action="close-modal">Cancel</button>
+      <button class="btn btn-primary btn-block" data-action="confirm-enroll" data-id="${t.id}">Yes, enroll</button>
+    </div>
+  </div>`;
+}
+
 function reviewModal(enrollmentId){
   const e = myEnrollments.find(x=>x.id===enrollmentId);
   const existing = myReviews.find(r=>r.enrollment_id===enrollmentId);
@@ -4293,6 +4471,54 @@ document.addEventListener('click', (e)=>{
       state.adminTab = el.dataset.tab;
       render();
       break;
+    case 'admin-enroll-filter':
+      state.adminEnrollFilter = el.dataset.filter;
+      render();
+      break;
+    case 'export-enrollments-csv': {
+      const header = ['Student','Teacher','Subject','Fee','Status','Enrolled on'];
+      const rows = ADMIN_ENROLLMENTS.map(e=>[e.studentName, e.teacherName, e.subject, e.fee||0, e.status, new Date(e.created_at).toLocaleDateString()]);
+      const csv = [header, ...rows].map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+      const blob = new Blob([csv], { type:'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'nearpath-tutors-enrollments.csv'; a.click();
+      URL.revokeObjectURL(url);
+      break;
+    }
+    case 'send-broadcast': {
+      const audience = document.getElementById('bcAudience').value;
+      const title = document.getElementById('bcTitle').value.trim();
+      const message = document.getElementById('bcMessage').value.trim();
+      if(!title){ toast('Please enter a title', 'warn'); return; }
+      setBtnLoading(el, true);
+      (async ()=>{
+        try{
+          if(audience==='students' || audience==='everyone'){
+            const rows = ADMIN_STUDENTS.map(s=>({ student_id:s.id, teacher_id:null, type:'admin_broadcast', title, message }));
+            if(rows.length){
+              const { error } = await sb.from('notifications').insert(rows);
+              if(error) throw error;
+            }
+          }
+          if(audience==='teachers' || audience==='everyone'){
+            const rows = ADMIN_TEACHERS.map(t=>({ teacher_id:t.id, student_id:null, type:'admin_broadcast', title, message }));
+            if(rows.length){
+              const { error } = await sb.from('teacher_notifications').insert(rows);
+              if(error) throw error;
+            }
+          }
+          toast('📣 Broadcast sent', 'ok');
+          document.getElementById('bcTitle').value = '';
+          document.getElementById('bcMessage').value = '';
+        }catch(err){
+          toast('❌ ' + err.message, 'err');
+        }finally{
+          setBtnLoading(el, false);
+        }
+      })();
+      break;
+    }
     case 'refresh-site-logs':
       ensureSiteLogs(true);
       break;
@@ -4446,6 +4672,13 @@ document.addEventListener('click', (e)=>{
         closeModal();
         toast('✅ Enquiry sent to ' + teacherName + '!', 'ok');
 
+        // Let the teacher know right away — shows up on their bell and
+        // in their Enquiries tab the moment they next look.
+        sb.from('teacher_notifications').insert({
+          teacher_id: teacherId, student_id: studentId, type:'new_enquiry',
+          title: 'New enquiry', message: (state.profile?.full_name || 'A parent') + ' sent you an enquiry.',
+        }).then(({error:nErr})=>{ if(nErr) console.error('Failed to notify teacher of enquiry', nErr); });
+
         // Only the first-ever contact with this teacher also gets posted as
         // a real chat message — if a thread already exists, the enquiry
         // still gets logged in the teacher's Enquiries tab, but doesn't
@@ -4485,6 +4718,14 @@ document.addEventListener('click', (e)=>{
         nav('studentAuth');
         return;
       }
+      // Ask for a quick confirmation before actually creating the
+      // enrollment — shows exactly what subject/schedule/fee they're
+      // about to sign up for, so it isn't a single accidental click.
+      openModal(enrollConfirmModal(t.id));
+      break;
+    }
+    case 'confirm-enroll': {
+      const t = TEACHERS.find(x=>x.id===el.dataset.id);
       setBtnLoading(el, true);
       sb.from('enrollments').insert({
         student_id: state.session.user.id, teacher_id: t.id, subject: t.subjects[0]||'General',
@@ -4494,12 +4735,19 @@ document.addEventListener('click', (e)=>{
         if(error){
           // 23505 = unique_violation — the DB-level guard against
           // enrolling twice in the same subject with the same teacher.
-          if(error.code === '23505'){ toast('You\'re already enrolled with ' + t.name + ' for this subject', 'warn'); nav('studentDashboard'); return; }
+          if(error.code === '23505'){ toast('You\'re already enrolled with ' + t.name + ' for this subject', 'warn'); closeModal(); nav('studentDashboard'); return; }
           toast('❌ ' + error.message, 'err'); return;
         }
+        closeModal();
         toast('✅ Enrolled with ' + t.name + '!', 'ok');
         studentDataStatus = 'idle';
         nav('studentDashboard');
+        // Let the teacher know right away — shows up on their bell and
+        // in their Students tab the moment they next look.
+        sb.from('teacher_notifications').insert({
+          teacher_id: t.id, student_id: state.session.user.id, type:'new_enrollment',
+          title: 'New enrollment', message: (state.profile?.full_name || 'A student') + ' enrolled for ' + (t.subjects[0]||'General') + '.',
+        }).then(({error:nErr})=>{ if(nErr) console.error('Failed to notify teacher of enrollment', nErr); });
       }).finally(()=>setBtnLoading(el, false));
       break;
     }
@@ -4560,11 +4808,13 @@ document.addEventListener('click', (e)=>{
       if(state.notifDrawerOpen){
         // The badge disappearing "once it's been seen" means: the moment
         // the panel opens, not waiting for the person to click each one.
-        const unreadIds = myNotifications.filter(n=>!n.readAt).map(n=>n.id);
+        const table = state.profile?.role==='teacher' ? 'teacher_notifications' : 'notifications';
+        const list = activeNotifList();
+        const unreadIds = list.filter(n=>!n.readAt).map(n=>n.id);
         if(unreadIds.length){
           const now = new Date().toISOString();
-          myNotifications.forEach(n=>{ if(!n.readAt) n.readAt = now; });
-          sb.from('notifications').update({ read_at: now }).in('id', unreadIds).then(({error})=>{
+          list.forEach(n=>{ if(!n.readAt) n.readAt = now; });
+          sb.from(table).update({ read_at: now }).in('id', unreadIds).then(({error})=>{
             if(error) console.error('Failed to mark notifications read', error);
           });
         }
@@ -4574,28 +4824,58 @@ document.addEventListener('click', (e)=>{
       break;
     }
     case 'mark-notif-read': {
+      const table = state.profile?.role==='teacher' ? 'teacher_notifications' : 'notifications';
       const id = parseInt(el.dataset.id);
-      const n = myNotifications.find(x=>x.id===id);
+      const n = activeNotifList().find(x=>x.id===id);
       if(!n || n.readAt) break;
       const now = new Date().toISOString();
       n.readAt = now;
       renderNotifDrawer();
       updateNotifBellBadge();
-      sb.from('notifications').update({ read_at: now }).eq('id', id).then(({error})=>{
+      sb.from(table).update({ read_at: now }).eq('id', id).then(({error})=>{
         if(error) console.error('Failed to mark notification read', error);
       });
       break;
     }
     case 'mark-all-notifs-read': {
-      const unreadIds = myNotifications.filter(n=>!n.readAt).map(n=>n.id);
+      const table = state.profile?.role==='teacher' ? 'teacher_notifications' : 'notifications';
+      const list = activeNotifList();
+      const unreadIds = list.filter(n=>!n.readAt).map(n=>n.id);
       if(!unreadIds.length) break;
       const now = new Date().toISOString();
-      myNotifications.forEach(n=>{ if(!n.readAt) n.readAt = now; });
+      list.forEach(n=>{ if(!n.readAt) n.readAt = now; });
       renderNotifDrawer();
       updateNotifBellBadge();
-      sb.from('notifications').update({ read_at: now }).in('id', unreadIds).then(({error})=>{
+      sb.from(table).update({ read_at: now }).in('id', unreadIds).then(({error})=>{
         if(error) console.error('Failed to mark notifications read', error);
       });
+      break;
+    }
+    // Clicking a notification (from the bell dropdown, or the student's
+    // Notifications tab) marks it read if needed, closes the drawer, and
+    // jumps straight to the page it's actually about — a fee reminder
+    // opens the overview where fees are shown, a batch update opens
+    // Batches, a new enrollment/enquiry opens the teacher's Students or
+    // Enquiries tab, and so on.
+    case 'open-notif': {
+      const role = state.profile?.role;
+      const table = role==='teacher' ? 'teacher_notifications' : 'notifications';
+      const id = parseInt(el.dataset.id);
+      const n = activeNotifList().find(x=>x.id===id);
+      if(!n) break;
+      if(!n.readAt){
+        const now = new Date().toISOString();
+        n.readAt = now;
+        sb.from(table).update({ read_at: now }).eq('id', id).then(({error})=>{
+          if(error) console.error('Failed to mark notification read', error);
+        });
+      }
+      state.notifDrawerOpen = false;
+      const targetTab = notifTargetTab(n, role);
+      if(role==='teacher'){ state.teacherTab = targetTab; nav('teacherDashboard'); }
+      else{ state.studentTab = targetTab; nav('studentDashboard'); }
+      renderNotifDrawer();
+      updateNotifBellBadge();
       break;
     }
     case 'open-batch-modal':
@@ -5066,12 +5346,33 @@ async function confirmPay(method){
   for(const e of due){
     await sb.from('enrollments').update({status:'paid'}).eq('id', e.id);
     await sb.from('payments').insert({ enrollment_id:e.id, student_id: state.session.user.id, amount:e.fee, method });
+    // Let the teacher know a fee just came in — shows up on their bell
+    // and in their Students tab.
+    sb.from('teacher_notifications').insert({
+      teacher_id: e.teacherId, student_id: state.session.user.id, enrollment_id: e.id, type:'fee_paid',
+      title: 'Fee received', message: (state.profile?.full_name || 'A student') + ' marked ₹' + e.fee + ' as paid for ' + e.subject + '.',
+    }).then(({error:nErr})=>{ if(nErr) console.error('Failed to notify teacher of payment', nErr); });
   }
   closeModal();
   toast('✅ Recorded ₹' + total + ' as paid.', 'ok');
   studentDataStatus = 'idle';
   ensureStudentData(true);
 }
+
+// Closes the notification bell's dropdown the moment someone clicks
+// anywhere else on the page — everywhere except inside the drawer itself
+// or the bell button that opened it (that click is handled separately, by
+// the delegated [data-action="toggle-notif-drawer"] listener above).
+document.addEventListener('click', (e)=>{
+  if(!state.notifDrawerOpen) return;
+  const drawer = document.querySelector('[data-notif-drawer]');
+  const bell = document.getElementById('notifBellBtn');
+  if(drawer && drawer.contains(e.target)) return;
+  if(bell && bell.contains(e.target)) return;
+  state.notifDrawerOpen = false;
+  renderNotifDrawer();
+  updateNotifBellBadge();
+});
 
 document.addEventListener('keydown', (e)=>{
   if(e.key !== 'Enter') return;

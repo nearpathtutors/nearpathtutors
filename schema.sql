@@ -179,9 +179,29 @@ create table attendance (
 create table notifications (
   id bigserial primary key,
   student_id uuid not null references profiles(id) on delete cascade,
-  teacher_id uuid not null references teacher_profiles(profile_id) on delete cascade,
+  -- nullable so an admin can broadcast to a student without it being tied
+  -- to any one teacher (see the 'admin_broadcast' type below)
+  teacher_id uuid references teacher_profiles(profile_id) on delete cascade,
   batch_id bigint references batches(id) on delete set null,
-  type text not null default 'general' check (type in ('trial_approved','trial_declined','batch_update','batch_cancelled','fee_reminder','assessment','general')),
+  type text not null default 'general' check (type in ('trial_approved','trial_declined','batch_update','batch_cancelled','fee_reminder','assessment','admin_broadcast','general')),
+  title text not null,
+  message text default '',
+  read_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+-- 13c) teacher_notifications: the mirror image of `notifications`, but
+-- flowing student→teacher (or admin→teacher) instead of teacher→student —
+-- a student enrolling, a student sending an enquiry, a student marking
+-- their own fee as paid, or an admin's site-wide announcement. Streamed
+-- live via Realtime so a teacher's notification bell updates instantly,
+-- exactly like the student-facing one.
+create table teacher_notifications (
+  id bigserial primary key,
+  teacher_id uuid not null references teacher_profiles(profile_id) on delete cascade,
+  student_id uuid references profiles(id) on delete set null,
+  enrollment_id bigint references enrollments(id) on delete set null,
+  type text not null default 'general' check (type in ('new_enrollment','new_enquiry','fee_paid','admin_broadcast','general')),
   title text not null,
   message text default '',
   read_at timestamptz,
@@ -263,6 +283,7 @@ alter table batch_students enable row level security;
 alter table trial_requests enable row level security;
 alter table attendance enable row level security;
 alter table notifications enable row level security;
+alter table teacher_notifications enable row level security;
 alter table assessments enable row level security;
 alter table assessment_marks enable row level security;
 alter table site_logs enable row level security;
@@ -449,7 +470,19 @@ create policy "teachers update attendance for their own batches" on attendance f
 -- (used to mark it read).
 create policy "notifications visible to the student" on notifications for select using (auth.uid() = student_id);
 create policy "teachers can notify their own students" on notifications for insert with check (auth.uid() = teacher_id);
+-- lets the admin panel's Broadcast tab send an announcement straight to
+-- any student, without it belonging to any particular teacher.
+create policy "admins can notify any student" on notifications for insert with check (is_admin());
 create policy "students can mark their notifications read" on notifications for update using (auth.uid() = student_id) with check (auth.uid() = student_id);
+
+-- teacher_notifications: a teacher only ever sees their own; a student can
+-- create one about themselves (new enrollment, new enquiry, fee marked
+-- paid), an admin can create one for a broadcast, and the teacher can mark
+-- their own notifications read.
+create policy "teacher_notifications visible to the teacher" on teacher_notifications for select using (auth.uid() = teacher_id);
+create policy "students can notify their own teacher" on teacher_notifications for insert with check (auth.uid() = student_id);
+create policy "admins can notify any teacher" on teacher_notifications for insert with check (is_admin());
+create policy "teachers can mark their notifications read" on teacher_notifications for update using (auth.uid() = teacher_id) with check (auth.uid() = teacher_id);
 
 -- assessments: visible to the owning teacher and to any student in that
 -- batch; only the owning teacher can create one.
@@ -490,6 +523,12 @@ begin
     where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'notifications'
   ) then
     alter publication supabase_realtime add table notifications;
+  end if;
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'teacher_notifications'
+  ) then
+    alter publication supabase_realtime add table teacher_notifications;
   end if;
   if not exists (
     select 1 from pg_publication_tables
@@ -934,6 +973,54 @@ grant execute on function mark_messages_read(uuid) to authenticated;
 -- create policy "admins can view logs" on site_logs for select using (is_admin());
 -- drop policy if exists "admins can clear logs" on site_logs;
 -- create policy "admins can clear logs" on site_logs for delete using (is_admin());
+
+-- ---------------------------------------------------------------
+-- MIGRATION (Part 17): teacher-side notifications (fee received, new
+-- enrollment, new enquiry), admin site-wide broadcasts, and recording the
+-- enrollment date. Safe to re-run.
+-- ---------------------------------------------------------------
+-- alter table notifications alter column teacher_id drop not null;
+-- alter table notifications drop constraint if exists notifications_type_check;
+-- alter table notifications add constraint notifications_type_check
+--   check (type in ('trial_approved','trial_declined','batch_update','batch_cancelled','fee_reminder','assessment','admin_broadcast','general'));
+--
+-- create table if not exists teacher_notifications (
+--   id bigserial primary key,
+--   teacher_id uuid not null references teacher_profiles(profile_id) on delete cascade,
+--   student_id uuid references profiles(id) on delete set null,
+--   enrollment_id bigint references enrollments(id) on delete set null,
+--   type text not null default 'general' check (type in ('new_enrollment','new_enquiry','fee_paid','admin_broadcast','general')),
+--   title text not null,
+--   message text default '',
+--   read_at timestamptz,
+--   created_at timestamptz not null default now()
+-- );
+-- alter table teacher_notifications enable row level security;
+-- drop policy if exists "teacher_notifications visible to the teacher" on teacher_notifications;
+-- create policy "teacher_notifications visible to the teacher" on teacher_notifications for select using (auth.uid() = teacher_id);
+-- drop policy if exists "students can notify their own teacher" on teacher_notifications;
+-- create policy "students can notify their own teacher" on teacher_notifications for insert with check (auth.uid() = student_id);
+-- drop policy if exists "admins can notify any teacher" on teacher_notifications;
+-- create policy "admins can notify any teacher" on teacher_notifications for insert with check (is_admin());
+-- drop policy if exists "teachers can mark their notifications read" on teacher_notifications;
+-- create policy "teachers can mark their notifications read" on teacher_notifications for update using (auth.uid() = teacher_id) with check (auth.uid() = teacher_id);
+--
+-- drop policy if exists "admins can notify any student" on notifications;
+-- create policy "admins can notify any student" on notifications for insert with check (is_admin());
+--
+-- do $$
+-- begin
+--   if not exists (
+--     select 1 from pg_publication_tables
+--     where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'teacher_notifications'
+--   ) then
+--     alter publication supabase_realtime add table teacher_notifications;
+--   end if;
+-- end $$;
+--
+-- (enrollments.created_at already exists from the original schema — every
+-- enrollment has always had its date recorded; this update just surfaces
+-- it in the UI, so no column change is needed for that part.)
 
 -- ---------------------------------------------------------------
 -- email_exists: lets the "Forgot password" screen tell someone whether
