@@ -225,6 +225,26 @@ create table site_settings (
 insert into site_settings (key, value) values ('maintenance', jsonb_build_object('enabled', false))
   on conflict (key) do nothing;
 
+-- 15) site_logs: a client-reported error log — every time a
+-- student/teacher/admin dashboard fails to load its data, the browser
+-- writes a row here (in addition to logging it to its own console) so an
+-- admin can see the reason from the admin panel's Diagnostics tab
+-- without having to ask the person to open dev tools. Anyone can insert
+-- one (it needs to work even for a half-signed-in user), but only an
+-- admin can read or clear the log.
+create table site_logs (
+  id bigserial primary key,
+  level text not null default 'error' check (level in ('error','warn','info')),
+  context text not null,       -- e.g. "Student dashboard", "Teacher dashboard"
+  message text not null,
+  code text,
+  details text,
+  hint text,
+  user_id uuid references profiles(id) on delete set null,
+  user_role text,
+  created_at timestamptz not null default now()
+);
+
 -- ---------------------------------------------------------------
 -- Row Level Security: lock every table down, then open specific,
 -- narrow policies. Without this, the anon key can read/write anything.
@@ -245,6 +265,7 @@ alter table attendance enable row level security;
 alter table notifications enable row level security;
 alter table assessments enable row level security;
 alter table assessment_marks enable row level security;
+alter table site_logs enable row level security;
 
 -- profiles: names are shown publicly (e.g. "with Ritu Sharma"), but only
 -- the owner can create/change their own row.
@@ -290,6 +311,12 @@ create policy "admins can delete any review" on reviews for delete using (is_adm
 -- this is the actual lock behind the admin panel's maintenance toggle.
 create policy "site settings are publicly readable" on site_settings for select using (true);
 create policy "admins can change site settings" on site_settings for all using (is_admin()) with check (is_admin());
+
+-- site_logs: anyone (even a not-fully-signed-in user) can write an error
+-- report about their own session; only an admin can read or clear them.
+create policy "anyone can report an error" on site_logs for insert with check (true);
+create policy "admins can view logs" on site_logs for select using (is_admin());
+create policy "admins can clear logs" on site_logs for delete using (is_admin());
 
 -- ---------------------------------------------------------------
 -- Realtime: stream site_settings changes to every open tab, so someone
@@ -376,8 +403,26 @@ create policy "teachers remove students from their own batches" on batch_student
 );
 -- lets a student see who else (their classmates) is in a batch they're
 -- themselves a member of — needed for the student-side Batches tab.
+-- Routed through a SECURITY DEFINER function rather than a plain
+-- subquery: a policy on batch_students that queries batch_students
+-- directly re-triggers the same policy for every row it looks at,
+-- causing infinite recursion (Postgres error 42P17). Running the check
+-- as the function's owner bypasses RLS for just that inner lookup and
+-- breaks the loop.
+create or replace function public.is_batchmate(target_batch_id bigint)
+returns boolean
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select exists(
+    select 1 from batch_students
+    where batch_id = target_batch_id and student_id = auth.uid()
+  );
+$$;
 create policy "students can view classmates in their own batches" on batch_students for select using (
-  exists(select 1 from batch_students mine where mine.batch_id = batch_students.batch_id and mine.student_id = auth.uid())
+  is_batchmate(batch_id)
 );
 
 -- trial_requests: visible to the student who asked and the teacher who
@@ -840,8 +885,20 @@ grant execute on function mark_messages_read(uuid) to authenticated;
 -- );
 --
 -- drop policy if exists "students can view classmates in their own batches" on batch_students;
+-- create or replace function public.is_batchmate(target_batch_id bigint)
+-- returns boolean
+-- language sql
+-- security definer
+-- set search_path = public
+-- stable
+-- as $$
+--   select exists(
+--     select 1 from batch_students
+--     where batch_id = target_batch_id and student_id = auth.uid()
+--   );
+-- $$;
 -- create policy "students can view classmates in their own batches" on batch_students for select using (
---   exists(select 1 from batch_students mine where mine.batch_id = batch_students.batch_id and mine.student_id = auth.uid())
+--   is_batchmate(batch_id)
 -- );
 --
 -- do $$
@@ -853,6 +910,30 @@ grant execute on function mark_messages_read(uuid) to authenticated;
 --     alter publication supabase_realtime add table assessment_marks;
 --   end if;
 -- end $$;
+
+-- ---------------------------------------------------------------
+-- MIGRATION (Part 16): site_logs, a persistent error log an admin can
+-- read from the Diagnostics tab. Safe to re-run.
+-- ---------------------------------------------------------------
+-- create table if not exists site_logs (
+--   id bigserial primary key,
+--   level text not null default 'error' check (level in ('error','warn','info')),
+--   context text not null,
+--   message text not null,
+--   code text,
+--   details text,
+--   hint text,
+--   user_id uuid references profiles(id) on delete set null,
+--   user_role text,
+--   created_at timestamptz not null default now()
+-- );
+-- alter table site_logs enable row level security;
+-- drop policy if exists "anyone can report an error" on site_logs;
+-- create policy "anyone can report an error" on site_logs for insert with check (true);
+-- drop policy if exists "admins can view logs" on site_logs;
+-- create policy "admins can view logs" on site_logs for select using (is_admin());
+-- drop policy if exists "admins can clear logs" on site_logs;
+-- create policy "admins can clear logs" on site_logs for delete using (is_admin());
 
 -- ---------------------------------------------------------------
 -- email_exists: lets the "Forgot password" screen tell someone whether

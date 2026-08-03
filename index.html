@@ -556,10 +556,33 @@ let studentBatchesStatus = 'idle';
 
 // The most recent dashboard-load failure (student/teacher/admin data
 // fetch), if any — captured so the error screen can show the real reason
-// instead of a generic message, and so an admin can see it on the
-// Diagnostics tab. Session-only: it resets on page reload, since it's
-// not written anywhere persistent.
+// instead of a generic message. Session-only (resets on reload) — the
+// persistent copy any admin can see later lives in `site_logs`, written
+// by reportError() below.
 let lastDataError = null;
+
+// Logs shown on the admin panel's Diagnostics tab.
+let siteLogs = [];
+let siteLogsStatus = 'idle';
+
+// Records a dashboard-load failure both locally (for the error screen the
+// person is looking at right now) and in the database (so an admin can
+// see it later from the Diagnostics tab, even after this tab closes). The
+// database write is best-effort and never throws — a logging failure
+// should never itself become a visible error.
+function reportError(context, err){
+  const entry = {
+    context, message: err?.message || String(err), code: err?.code || null,
+    details: err?.details || null, hint: err?.hint || null, at: new Date().toISOString(),
+  };
+  lastDataError = entry;
+  sb.from('site_logs').insert({
+    level: 'error', context, message: entry.message, code: entry.code, details: entry.details, hint: entry.hint,
+    user_id: state.session?.user?.id || null, user_role: state.profile?.role || null,
+  }).then(({error})=>{
+    if(error) console.error('Failed to persist error log', error);
+  });
+}
 
 const WEEKDAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 const GRADE_OPTIONS = ['Nursery','LKG','UKG','Grade 1','Grade 2','Grade 3','Grade 4','Grade 5','Grade 6','Grade 7','Grade 8','Grade 9','Grade 10','Grade 11','Grade 12','Undergraduate','Other'];
@@ -1277,7 +1300,7 @@ async function ensureStudentData(force){
   }catch(err){
     console.error('Failed to load student dashboard data', err);
     studentDataStatus = 'error';
-    lastDataError = { context:'Student dashboard', message: err.message||String(err), code: err.code||null, details: err.details||null, hint: err.hint||null, at: new Date().toISOString() };
+    reportError('Student dashboard', err);
   }
   render();
 }
@@ -1362,7 +1385,7 @@ async function ensureTeacherData(force){
   }catch(err){
     console.error('Failed to load teacher dashboard data', err);
     teacherDataStatus = 'error';
-    lastDataError = { context:'Teacher dashboard', message: err.message||String(err), code: err.code||null, details: err.details||null, hint: err.hint||null, at: new Date().toISOString() };
+    reportError('Teacher dashboard', err);
   }
   render();
 }
@@ -1505,10 +1528,34 @@ async function ensureAdminData(force){
   }catch(err){
     console.error('Failed to load admin data', err);
     adminDataStatus = 'error';
-    lastDataError = { context:'Admin panel', message: err.message||String(err), code: err.code||null, details: err.details||null, hint: err.hint||null, at: new Date().toISOString() };
+    reportError('Admin panel', err);
   }
   render();
 }
+
+// Fetches the most recent client-reported errors for the admin panel's
+// Diagnostics tab (see the site_logs table — every dashboard-load
+// failure anywhere in the app writes a row there via reportError()).
+async function ensureSiteLogs(force){
+  if(siteLogsStatus==='ready' && !force) return;
+  siteLogsStatus = 'loading';
+  refreshAdminDiagnosticsPane();
+  try{
+    const { data, error } = await sb.from('site_logs').select('*').order('created_at',{ascending:false}).limit(200);
+    if(error) throw error;
+    siteLogs = data || [];
+    siteLogsStatus = 'ready';
+  }catch(err){
+    console.error('Failed to load site logs', err);
+    siteLogsStatus = 'error';
+  }
+  refreshAdminDiagnosticsPane();
+}
+
+function refreshAdminDiagnosticsPane(){
+  if(state.view==='adminDashboard' && state.adminTab==='diagnostics') render();
+}
+
 
 /* =========================================================
    SITE MAINTENANCE MODE — a single publicly-readable row in
@@ -1592,7 +1639,7 @@ function navbar(){
         <div style="display:flex; gap:10px; align-items:center;">
           <div class="pill ${c==='customer'?'active':''}" data-action="switch-portal" data-portal="customer">👪 Parents</div>
           <div class="pill ${c==='teacher'?'active':''}" data-action="switch-portal" data-portal="teacher">🍎 Teachers</div>
-          ${loggedIn && state.profile?.role==='student' ? `<button class="btn btn-ghost btn-sm notif-bell" data-action="toggle-notif-drawer" title="Notifications" aria-label="Notifications">🔔${myNotifications.filter(n=>!n.readAt).length ? `<span class="notif-bell-badge">${myNotifications.filter(n=>!n.readAt).length}</span>` : ''}</button>` : ''}
+          ${loggedIn && state.profile?.role==='student' ? `<button id="notifBellBtn" class="btn btn-ghost btn-sm notif-bell" data-action="toggle-notif-drawer" title="Notifications" aria-label="Notifications">${notifBellInnerHTML()}</button>` : ''}
           <button class="btn btn-ghost btn-sm" data-action="toggle-theme" title="Switch to ${currentTheme()==='dark'?'light':'dark'} theme" aria-label="Toggle theme">${currentTheme()==='dark' ? '☀️' : '🌙'}</button>
           <button class="btn btn-ghost btn-sm" data-action="go-admin" title="Admin panel" aria-label="Admin panel">🛡️</button>
           ${loggedIn
@@ -2215,13 +2262,16 @@ function teacherStudents(){
       <thead><tr><th>Name</th><th>Grade</th><th>Subject</th><th>Fee status</th><th>Fee</th><th></th></tr></thead>
       <tbody>
         ${filtered.map(s=>`
-        <tr>
-          <td style="font-weight:600; cursor:pointer; color:var(--primary);" data-action="open-student-profile" data-id="${s.studentId}">${s.name}</td>
+        <tr style="cursor:pointer;" data-action="open-student-profile" data-id="${s.studentId}">
+          <td style="font-weight:600;">${escapeHtml(s.name)}</td>
           <td class="muted">${s.grade}</td>
           <td class="muted">${s.subject}</td>
           <td><span class="badge ${s.feeStatus==='paid'?'badge-green':s.feeStatus==='due'?'badge-amber':'badge-red'}">${s.feeStatus.toUpperCase()}</span></td>
           <td class="muted">₹${s.fee}</td>
-          <td><button class="btn btn-ghost btn-sm" data-action="open-chat" data-teacher="${state.session.user.id}" data-student="${s.studentId}" data-name="${s.name}">💬 Chat</button></td>
+          <td style="white-space:nowrap;">
+            <button class="btn btn-ghost btn-sm" data-action="open-chat" data-teacher="${state.session.user.id}" data-student="${s.studentId}" data-name="${escapeHtml(s.name)}">💬 Chat</button>
+            ${s.feeStatus!=='paid' ? `<button class="btn btn-ghost btn-sm" data-action="notify-fee" data-id="${s.enrollmentId}">🔔 Notify fee</button>` : ''}
+          </td>
         </tr>`).join('')}
       </tbody>
     </table>` : (state.studentsFilter ? `<p class="muted" style="font-size:13.5px;">No students with pending fees right now. 🎉</p>` : `<p class="muted" style="font-size:13.5px;">No students enrolled yet. Share your profile link so parents can find you.</p>`)}
@@ -2252,6 +2302,7 @@ function teacherBatches(){
         <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;">
           <button class="btn btn-ghost btn-sm" data-action="open-batch-detail" data-id="${b.id}">🔍 View details</button>
           <button class="btn btn-ghost btn-sm" data-action="open-batch-students" data-id="${b.id}">👥 Manage students</button>
+          <button class="btn btn-ghost btn-sm" data-action="open-assessment-modal" data-id="${b.id}">📝 New assessment</button>
           <button class="btn btn-ghost btn-sm" data-action="open-batch-modal" data-id="${b.id}">✏️ Edit</button>
           <button class="btn btn-ghost btn-sm" data-action="delete-batch" data-id="${b.id}" data-name="${escapeHtml(b.name)}">🗑️ Delete</button>
         </div>
@@ -2289,7 +2340,7 @@ function batchDetailView(batchId){
       </div>
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
         <button class="btn btn-primary btn-sm" data-action="open-notify-batch" data-id="${b.id}">📣 Notify students</button>
-        <button class="btn btn-primary btn-sm" data-action="open-assessment-modal" data-id="${b.id}">📝 Send assessment marks</button>
+        <button class="btn btn-primary btn-sm" data-action="open-assessment-modal" data-id="${b.id}">📝 New assessment</button>
         <button class="btn btn-ghost btn-sm" data-action="open-batch-modal" data-id="${b.id}">✏️ Edit</button>
       </div>
     </div>
@@ -2313,7 +2364,7 @@ function batchDetailView(batchId){
         const c = attendanceCounts(batchId, s.id);
         return `<details style="border-radius:12px; background:var(--divider-soft); overflow:hidden;">
           <summary style="cursor:pointer; padding:12px 14px; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; list-style:none;">
-            <span style="font-weight:600; font-size:13.5px; color:var(--primary); cursor:pointer;" data-action="open-student-profile" data-id="${s.id}" onclick="event.preventDefault()">${escapeHtml(s.name)}</span>
+            <span style="font-weight:600; font-size:13.5px; cursor:pointer; text-decoration:underline; text-decoration-color:var(--divider);" data-action="open-student-profile" data-id="${s.id}" onclick="event.preventDefault()">${escapeHtml(s.name)}</span>
             <span style="display:flex; gap:8px; align-items:center;">
               ${loadingAttendance ? `<span class="skel skel-line" style="width:90px; display:inline-block;"></span>` : `<span class="muted" style="font-size:11.5px;">✅ ${c.present} · ❌ ${c.absent} · ⏰ ${c.late}</span>`}
               ${enr ? `<span class="badge ${enr.feeStatus==='paid'?'badge-green':enr.feeStatus==='due'?'badge-amber':'badge-red'}" id="feeBadge-${batchId}-${s.id}">${enr.feeStatus.toUpperCase()}</span>` : `<span class="badge">NO ENROLLMENT</span>`}
@@ -2725,36 +2776,43 @@ function viewAdminDashboard(){
 // see the "admin-delete-review" action). All computed client-side from
 // ADMIN_TEACHERS/STUDENTS/ENROLLMENTS/PAYMENTS/ENQUIRIES/REVIEWS, which
 // ensureAdminData() loads together with the rest of the admin panel.
-// Shows the most recent dashboard-load failure, if any, so an admin
-// doesn't have to ask a teacher/student to open their browser console.
-// Session-only — nothing here is written to the database, so it only
-// covers failures that happened in THIS admin's own browser tab (an
-// admin can't see an error that happened on someone else's device). For
-// that, the person who hit the error still needs to check their own
-// browser's dev tools console (F12 → Console tab) and share what it says.
+// Shows recent client-reported errors from the site_logs table — every
+// dashboard-load failure anywhere in the app (student, teacher, or admin)
+// writes a row there via reportError(), so an admin can see the reason
+// without asking the person to open their browser console.
 function adminDiagnosticsView(){
+  if(siteLogsStatus==='idle') ensureSiteLogs();
+  const loading = siteLogsStatus==='idle' || siteLogsStatus==='loading';
   return `
   <div class="glass" style="padding:22px;">
-    <h3 style="font-size:15.5px; margin-bottom:6px;">🩺 Diagnostics</h3>
-    <p class="muted" style="font-size:12.5px; margin-bottom:18px; line-height:1.5;">
-      The most recent dashboard-load failure seen in this browser tab, if any. This does not track errors on other people's devices —
-      if a teacher or student reports a "Couldn't load dashboard" screen, they'll need to check their own browser's console (F12) for the exact reason.
-    </p>
-    ${lastDataError ? `
-    <div style="padding:16px; border-radius:12px; background:var(--divider-soft); border:1px solid var(--red);">
-      <div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; align-items:baseline;">
-        <div style="font-weight:700; font-size:14px;">${escapeHtml(lastDataError.context)}</div>
-        <div class="muted" style="font-size:11.5px;">${new Date(lastDataError.at).toLocaleString()}</div>
-      </div>
-      <div style="margin-top:10px; font-family:var(--mono); font-size:12.5px; word-break:break-word;">
-        ${lastDataError.code ? `<div class="muted" style="font-family:inherit;">Code: ${escapeHtml(lastDataError.code)}</div>` : ''}
-        <div style="margin-top:4px;">${escapeHtml(lastDataError.message)}</div>
-        ${lastDataError.details ? `<div class="muted" style="font-family:inherit; margin-top:6px;">Details: ${escapeHtml(lastDataError.details)}</div>` : ''}
-        ${lastDataError.hint ? `<div class="muted" style="font-family:inherit; margin-top:6px;">Hint: ${escapeHtml(lastDataError.hint)}</div>` : ''}
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:6px;">
+      <h3 style="font-size:15.5px;">🩺 Diagnostics</h3>
+      <div style="display:flex; gap:8px;">
+        <button class="btn btn-ghost btn-sm" data-action="refresh-site-logs">🔄 Refresh</button>
+        ${siteLogs.length ? `<button class="btn btn-ghost btn-sm" style="color:var(--red);" data-action="clear-site-logs">🗑️ Clear all</button>` : ''}
       </div>
     </div>
-    <button class="btn btn-ghost btn-sm" style="margin-top:14px;" data-action="clear-diagnostics">Clear</button>
-    ` : `<p class="muted" style="font-size:13.5px;">No errors recorded in this tab yet. 🎉</p>`}
+    <p class="muted" style="font-size:12.5px; margin-bottom:18px; line-height:1.5;">
+      Every "Couldn't load dashboard" failure, from any student, teacher, or admin, on any device, lands here automatically — the last 200.
+    </p>
+    ${loading ? `<div style="display:flex; flex-direction:column; gap:10px;">
+      <div class="skel skel-card"></div><div class="skel skel-card"></div>
+    </div>` : siteLogsStatus==='error' ? `<p class="muted" style="font-size:13.5px;">Couldn't load logs. Try refreshing.</p>` : (siteLogs.length ? `
+    <div style="display:flex; flex-direction:column; gap:10px;">
+      ${siteLogs.map(l=>`
+      <div style="padding:14px 16px; border-radius:12px; background:var(--divider-soft); border:1px solid ${l.level==='error'?'var(--red)':'transparent'};">
+        <div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; align-items:baseline;">
+          <div style="font-weight:700; font-size:13.5px;">${escapeHtml(l.context)}${l.user_role ? `<span class="badge" style="margin-left:8px; font-weight:400;">${escapeHtml(l.user_role)}</span>` : ''}</div>
+          <div class="muted" style="font-size:11.5px;">${new Date(l.created_at).toLocaleString()}</div>
+        </div>
+        <div style="margin-top:8px; font-family:var(--mono); font-size:12px; word-break:break-word;">
+          ${l.code ? `<div class="muted" style="font-family:inherit;">Code: ${escapeHtml(l.code)}</div>` : ''}
+          <div style="margin-top:3px;">${escapeHtml(l.message)}</div>
+          ${l.details ? `<div class="muted" style="font-family:inherit; margin-top:5px;">Details: ${escapeHtml(l.details)}</div>` : ''}
+          ${l.hint ? `<div class="muted" style="font-family:inherit; margin-top:5px;">Hint: ${escapeHtml(l.hint)}</div>` : ''}
+        </div>
+      </div>`).join('')}
+    </div>` : `<p class="muted" style="font-size:13.5px;">No errors logged yet. 🎉</p>`)}
   </div>`;
 }
 
@@ -2915,6 +2973,22 @@ function renderChatDock(){
 // dock) so it survives full-page re-renders without losing its open/
 // closed state. Only ever shown for a logged-in student; a teacher has
 // nothing to open here since notifications only ever flow teacher→student.
+// The bell icon + its unread-count badge — shared by the navbar's initial
+// render and updateNotifBellBadge() below, so the two never drift out of
+// sync with each other.
+function notifBellInnerHTML(){
+  const count = myNotifications.filter(n=>!n.readAt).length;
+  return `🔔${count ? `<span class="notif-bell-badge">${count}</span>` : ''}`;
+}
+
+// Refreshes just the bell icon in place (no full page re-render) whenever
+// the unread count changes — opening the drawer, marking something read,
+// or a new notification arriving in the background.
+function updateNotifBellBadge(){
+  const btn = document.getElementById('notifBellBtn');
+  if(btn) btn.innerHTML = notifBellInnerHTML();
+}
+
 function renderNotifDrawer(){
   let root = document.getElementById('notifDrawerRoot');
   if(!root){ root = document.createElement('div'); root.id='notifDrawerRoot'; document.body.appendChild(root); }
@@ -3910,7 +3984,7 @@ function assessmentModal(batchId){
   const b = myBatches.find(x=>x.id===batchId);
   if(!b) return '';
   return `<div class="glass modal">
-    <h3 style="font-size:18px; margin-bottom:4px;">Send assessment marks — ${escapeHtml(b.name)}</h3>
+    <h3 style="font-size:18px; margin-bottom:4px;">New assessment — ${escapeHtml(b.name)}</h3>
     <p class="muted" style="font-size:13px; margin-bottom:18px;">Each student below gets a notification with their own score.</p>
     <div class="grid-2" style="gap:12px;">
       <div class="field"><label class="field-label">Assessment title</label><input class="input" id="asTitle" placeholder="e.g. Unit 3 Test"/></div>
@@ -4219,10 +4293,21 @@ document.addEventListener('click', (e)=>{
       state.adminTab = el.dataset.tab;
       render();
       break;
-    case 'clear-diagnostics':
-      lastDataError = null;
-      render();
+    case 'refresh-site-logs':
+      ensureSiteLogs(true);
       break;
+    case 'clear-site-logs': {
+      if(!confirm('Delete all logged errors? This cannot be undone.')) return;
+      setBtnLoading(el, true);
+      sb.from('site_logs').delete().gte('id', 0).then(({error})=>{
+        if(error){ toast('❌ ' + error.message, 'err'); return; }
+        siteLogs = [];
+        lastDataError = null;
+        toast('🗑️ Logs cleared', 'ok');
+        render();
+      }).finally(()=>setBtnLoading(el, false));
+      break;
+    }
     case 'admin-delete-profile': {
       const name = el.dataset.name, role = el.dataset.role, id = el.dataset.id;
       if(!confirm(`Delete ${role} "${name}"? This permanently removes their login and all related data (listings, enrollments, payments, reviews). This cannot be undone.`)) return;
@@ -4470,10 +4555,24 @@ document.addEventListener('click', (e)=>{
       render();
       break;
     }
-    case 'toggle-notif-drawer':
+    case 'toggle-notif-drawer': {
       state.notifDrawerOpen = !state.notifDrawerOpen;
+      if(state.notifDrawerOpen){
+        // The badge disappearing "once it's been seen" means: the moment
+        // the panel opens, not waiting for the person to click each one.
+        const unreadIds = myNotifications.filter(n=>!n.readAt).map(n=>n.id);
+        if(unreadIds.length){
+          const now = new Date().toISOString();
+          myNotifications.forEach(n=>{ if(!n.readAt) n.readAt = now; });
+          sb.from('notifications').update({ read_at: now }).in('id', unreadIds).then(({error})=>{
+            if(error) console.error('Failed to mark notifications read', error);
+          });
+        }
+      }
       renderNotifDrawer();
+      updateNotifBellBadge();
       break;
+    }
     case 'mark-notif-read': {
       const id = parseInt(el.dataset.id);
       const n = myNotifications.find(x=>x.id===id);
@@ -4481,6 +4580,7 @@ document.addEventListener('click', (e)=>{
       const now = new Date().toISOString();
       n.readAt = now;
       renderNotifDrawer();
+      updateNotifBellBadge();
       sb.from('notifications').update({ read_at: now }).eq('id', id).then(({error})=>{
         if(error) console.error('Failed to mark notification read', error);
       });
@@ -4492,6 +4592,7 @@ document.addEventListener('click', (e)=>{
       const now = new Date().toISOString();
       myNotifications.forEach(n=>{ if(!n.readAt) n.readAt = now; });
       renderNotifDrawer();
+      updateNotifBellBadge();
       sb.from('notifications').update({ read_at: now }).in('id', unreadIds).then(({error})=>{
         if(error) console.error('Failed to mark notifications read', error);
       });
@@ -4602,6 +4703,20 @@ document.addEventListener('click', (e)=>{
       sb.from('notifications').insert(rows).then(({error})=>{
         if(error){ toast('❌ ' + error.message, 'err'); return; }
         toast('🔔 Reminded ' + pending.length + ' student' + (pending.length!==1?'s':'') + ' about pending fees', 'ok');
+      }).finally(()=>setBtnLoading(el, false));
+      break;
+    }
+    case 'notify-fee': {
+      const enrollmentId = parseInt(el.dataset.id);
+      const s = myStudents.find(x=>x.enrollmentId===enrollmentId);
+      if(!s) return;
+      setBtnLoading(el, true);
+      sb.from('notifications').insert({
+        student_id: s.studentId, teacher_id: state.session.user.id, type: 'fee_reminder',
+        title: `Fee reminder — ${s.subject}`, message: `₹${s.fee} is due for ${s.subject}. Please pay at your earliest convenience.`,
+      }).then(({error})=>{
+        if(error){ toast('❌ ' + error.message, 'err'); return; }
+        toast('🔔 Reminded ' + s.name + ' about the pending fee', 'ok');
       }).finally(()=>setBtnLoading(el, false));
       break;
     }
