@@ -60,7 +60,8 @@ create table enrollments (
   status text not null default 'due' check (status in ('due','overdue','paid')),
   due_date date,
   grade text,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  unique(student_id, teacher_id, subject)  -- a student can only enroll once per subject with a given teacher
 );
 
 -- 6) payments: a record each time fees are marked paid
@@ -126,6 +127,8 @@ create table batches (
   description text default '',
   capacity int,
   status text not null default 'active' check (status in ('active','inactive')),
+  current_topic text default '',   -- "which chapter is going on" — shown to students on their Batches tab
+  next_class_date date,            -- shown to students on their Batches tab
   created_at timestamptz not null default now()
 );
 
@@ -169,19 +172,44 @@ create table attendance (
 );
 
 -- 13) notifications: things a teacher sends a student — a trial class
--- being approved/declined (with their message attached), or a heads-up
--- about a batch's timing changing or a class being cancelled. Streamed
--- live via Realtime so a student's Notifications tab updates instantly.
+-- being approved/declined (with their message attached), a heads-up about
+-- a batch's timing changing or a class being cancelled, a fee-payment
+-- reminder, or new assessment marks being published. Streamed live via
+-- Realtime so a student's Notifications tab updates instantly.
 create table notifications (
   id bigserial primary key,
   student_id uuid not null references profiles(id) on delete cascade,
   teacher_id uuid not null references teacher_profiles(profile_id) on delete cascade,
   batch_id bigint references batches(id) on delete set null,
-  type text not null default 'general' check (type in ('trial_approved','trial_declined','batch_update','batch_cancelled','general')),
+  type text not null default 'general' check (type in ('trial_approved','trial_declined','batch_update','batch_cancelled','fee_reminder','assessment','general')),
   title text not null,
   message text default '',
   read_at timestamptz,
   created_at timestamptz not null default now()
+);
+
+-- 13b) assessments: a test/quiz a teacher records against a batch, and
+-- assessment_marks: each student's score for it. A teacher sends marks to
+-- a whole batch at once from the batch detail view; each student sees
+-- only their own marks (and a notification when new ones are published).
+create table assessments (
+  id bigserial primary key,
+  batch_id bigint not null references batches(id) on delete cascade,
+  teacher_id uuid not null references teacher_profiles(profile_id) on delete cascade,
+  subject text not null,
+  title text not null,
+  max_marks int not null default 100,
+  created_at timestamptz not null default now()
+);
+
+create table assessment_marks (
+  id bigserial primary key,
+  assessment_id bigint not null references assessments(id) on delete cascade,
+  student_id uuid not null references profiles(id) on delete cascade,
+  marks numeric not null,
+  remarks text default '',
+  created_at timestamptz not null default now(),
+  unique(assessment_id, student_id)
 );
 
 -- 14) site_settings: a small key/value store for site-wide toggles.
@@ -215,6 +243,8 @@ alter table batch_students enable row level security;
 alter table trial_requests enable row level security;
 alter table attendance enable row level security;
 alter table notifications enable row level security;
+alter table assessments enable row level security;
+alter table assessment_marks enable row level security;
 
 -- profiles: names are shown publicly (e.g. "with Ritu Sharma"), but only
 -- the owner can create/change their own row.
@@ -344,6 +374,11 @@ create policy "teachers add students to their own batches" on batch_students for
 create policy "teachers remove students from their own batches" on batch_students for delete using (
   exists(select 1 from batches b where b.id = batch_id and b.teacher_id = auth.uid())
 );
+-- lets a student see who else (their classmates) is in a batch they're
+-- themselves a member of — needed for the student-side Batches tab.
+create policy "students can view classmates in their own batches" on batch_students for select using (
+  exists(select 1 from batch_students mine where mine.batch_id = batch_students.batch_id and mine.student_id = auth.uid())
+);
 
 -- trial_requests: visible to the student who asked and the teacher who
 -- received it. A student can only ever create a request as themselves;
@@ -371,6 +406,24 @@ create policy "notifications visible to the student" on notifications for select
 create policy "teachers can notify their own students" on notifications for insert with check (auth.uid() = teacher_id);
 create policy "students can mark their notifications read" on notifications for update using (auth.uid() = student_id) with check (auth.uid() = student_id);
 
+-- assessments: visible to the owning teacher and to any student in that
+-- batch; only the owning teacher can create one.
+create policy "assessment visible to teacher or batch students" on assessments for select using (
+  auth.uid() = teacher_id or exists(select 1 from batch_students bs where bs.batch_id = assessments.batch_id and bs.student_id = auth.uid())
+);
+create policy "teachers create assessments for their own batches" on assessments for insert with check (
+  auth.uid() = teacher_id and exists(select 1 from batches b where b.id = batch_id and b.teacher_id = auth.uid())
+);
+
+-- assessment_marks: a student sees only their own row; the owning teacher
+-- sees every row for their own assessments; only that teacher can insert.
+create policy "marks visible to teacher or the student" on assessment_marks for select using (
+  student_id = auth.uid() or exists(select 1 from assessments a where a.id = assessment_id and a.teacher_id = auth.uid())
+);
+create policy "teachers record marks for their own assessments" on assessment_marks for insert with check (
+  exists(select 1 from assessments a where a.id = assessment_id and a.teacher_id = auth.uid())
+);
+
 -- ---------------------------------------------------------------
 -- Realtime: stream new/updated `trial_requests` rows, so a teacher sees a
 -- new trial request appear the instant a student sends one, and a student
@@ -392,6 +445,12 @@ begin
     where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'notifications'
   ) then
     alter publication supabase_realtime add table notifications;
+  end if;
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'assessment_marks'
+  ) then
+    alter publication supabase_realtime add table assessment_marks;
   end if;
 end $$;
 
@@ -709,6 +768,89 @@ grant execute on function mark_messages_read(uuid) to authenticated;
 --     where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'notifications'
 --   ) then
 --     alter publication supabase_realtime add table notifications;
+--   end if;
+-- end $$;
+
+-- ---------------------------------------------------------------
+-- MIGRATION (Part 15): assessments + per-student marks, a batch's current
+-- topic/next class date, classmates visibility in batch_students, two
+-- more notification types (fee_reminder, assessment), and a unique
+-- constraint on enrollments so a student can't enroll twice in the same
+-- subject with the same teacher. Safe to re-run EXCEPT the unique
+-- constraint line, which will fail if you already have duplicate
+-- enrollments — see the note right above it for how to clean those up
+-- first.
+-- ---------------------------------------------------------------
+-- alter table batches add column if not exists current_topic text default '';
+-- alter table batches add column if not exists next_class_date date;
+--
+-- alter table notifications drop constraint if exists notifications_type_check;
+-- alter table notifications add constraint notifications_type_check
+--   check (type in ('trial_approved','trial_declined','batch_update','batch_cancelled','fee_reminder','assessment','general'));
+--
+-- -- Run this SELECT first if you're not sure whether you have duplicates:
+-- --   select student_id, teacher_id, subject, count(*) from enrollments
+-- --   group by 1,2,3 having count(*) > 1;
+-- -- If it returns rows, delete the extra ones (keeping whichever id you
+-- -- want to keep per group) before running the next line.
+-- do $$
+-- begin
+--   if not exists (select 1 from pg_constraint where conname = 'enrollments_student_teacher_subject_unique') then
+--     alter table enrollments add constraint enrollments_student_teacher_subject_unique
+--       unique (student_id, teacher_id, subject);
+--   end if;
+-- end $$;
+--
+-- create table if not exists assessments (
+--   id bigserial primary key,
+--   batch_id bigint not null references batches(id) on delete cascade,
+--   teacher_id uuid not null references teacher_profiles(profile_id) on delete cascade,
+--   subject text not null,
+--   title text not null,
+--   max_marks int not null default 100,
+--   created_at timestamptz not null default now()
+-- );
+-- alter table assessments enable row level security;
+-- drop policy if exists "assessment visible to teacher or batch students" on assessments;
+-- create policy "assessment visible to teacher or batch students" on assessments for select using (
+--   auth.uid() = teacher_id or exists(select 1 from batch_students bs where bs.batch_id = assessments.batch_id and bs.student_id = auth.uid())
+-- );
+-- drop policy if exists "teachers create assessments for their own batches" on assessments;
+-- create policy "teachers create assessments for their own batches" on assessments for insert with check (
+--   auth.uid() = teacher_id and exists(select 1 from batches b where b.id = batch_id and b.teacher_id = auth.uid())
+-- );
+--
+-- create table if not exists assessment_marks (
+--   id bigserial primary key,
+--   assessment_id bigint not null references assessments(id) on delete cascade,
+--   student_id uuid not null references profiles(id) on delete cascade,
+--   marks numeric not null,
+--   remarks text default '',
+--   created_at timestamptz not null default now(),
+--   unique(assessment_id, student_id)
+-- );
+-- alter table assessment_marks enable row level security;
+-- drop policy if exists "marks visible to teacher or the student" on assessment_marks;
+-- create policy "marks visible to teacher or the student" on assessment_marks for select using (
+--   student_id = auth.uid() or exists(select 1 from assessments a where a.id = assessment_id and a.teacher_id = auth.uid())
+-- );
+-- drop policy if exists "teachers record marks for their own assessments" on assessment_marks;
+-- create policy "teachers record marks for their own assessments" on assessment_marks for insert with check (
+--   exists(select 1 from assessments a where a.id = assessment_id and a.teacher_id = auth.uid())
+-- );
+--
+-- drop policy if exists "students can view classmates in their own batches" on batch_students;
+-- create policy "students can view classmates in their own batches" on batch_students for select using (
+--   exists(select 1 from batch_students mine where mine.batch_id = batch_students.batch_id and mine.student_id = auth.uid())
+-- );
+--
+-- do $$
+-- begin
+--   if not exists (
+--     select 1 from pg_publication_tables
+--     where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'assessment_marks'
+--   ) then
+--     alter publication supabase_realtime add table assessment_marks;
 --   end if;
 -- end $$;
 

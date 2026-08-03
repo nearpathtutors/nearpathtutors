@@ -235,6 +235,24 @@ a{ color:inherit; text-decoration:none; }
   .chat-dock{ right:10px; left:10px; bottom:10px; width:auto; max-width:none; height:min(480px, calc(100vh - 80px)); }
   .chat-bubble{ right:16px; bottom:16px; }
 }
+.notif-drawer{
+  position:fixed; top:78px; right:20px; z-index:260;
+  width:360px; max-width:calc(100vw - 32px);
+  max-height:min(520px, calc(100vh - 120px));
+  display:flex; flex-direction:column; padding:16px;
+  box-shadow: 0 16px 44px var(--shadow-card);
+  animation: modalIn .3s cubic-bezier(.2,.9,.3,1.15) both;
+  overflow-y:auto;
+}
+@media (max-width: 480px){
+  .notif-drawer{ right:10px; left:10px; width:auto; max-width:none; }
+}
+.notif-bell{ position:relative; }
+.notif-bell-badge{
+  position:absolute; top:-4px; right:-6px; min-width:17px; height:17px; padding:0 4px;
+  border-radius:9px; background:#e63946; color:#fff; font-size:10.5px; font-weight:800;
+  display:flex; align-items:center; justify-content:center; border:2px solid var(--bg2);
+}
 .chat-msg-reply-btn{
   width:22px; height:22px; border-radius:50%; flex-shrink:0; margin-bottom:18px;
   background:var(--glass); border:1px solid var(--glass-border); color:var(--text-dim);
@@ -376,8 +394,11 @@ const state = {
   selectedTeacherFrom: 'home',  // 'home' | 'browse' — which page the teacher profile was opened from, for the back button
   filters: { category:'all', query:'', sortDistance:false },
   teacherTab: 'overview',
-  studentTab: 'overview',    // 'overview' | 'notifications' — which panel the student dashboard is showing
+  studentTab: 'overview',    // 'overview' | 'notifications' | 'batches' — which panel the student dashboard is showing
   selectedBatchId: null,     // when set, the Batches tab shows that batch's detail view instead of the list
+  selectedStudentProfileId: null,  // when set, the teacher dashboard shows that student's full profile instead of the active tab
+  studentsFilter: null,      // null | 'pending' — filters the teacher's Students tab to only fee-pending students
+  notifDrawerOpen: false,    // whether the top-bar notification bell's dropdown is open
   studentAuthMode: 'login',   // 'login' | 'signup'
   teacherAuthMode: 'login',
   myLocation: null,      // { lat, lng } for the person browsing — used to auto-calc distance to each teacher
@@ -520,6 +541,19 @@ let batchAttendanceForId = null;
 let batchAttendanceStatus = 'idle';
 let myTrialBookings = [];   // trial-class requests the logged-in student has made
 let myNotifications = [];   // notifications for the logged-in student (trial responses, batch announcements)
+
+// Teacher-side: full profile detail view for one student (grade, every
+// attendance record, every assessment mark, across the teacher's own
+// batches with that student) — fetched on demand when a teacher clicks a
+// student's name (from the Students tab or a batch's detail view).
+let studentProfileDetail = { id: null, status: 'idle', profile: null, attendance: [], assessments: [] };
+
+// Student-side: batches the logged-in student is part of, each with its
+// classmate roster — fetched once per dashboard visit, like the other
+// student-dashboard data.
+let myStudentBatches = [];
+let studentBatchesStatus = 'idle';
+
 const WEEKDAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 const GRADE_OPTIONS = ['Nursery','LKG','UKG','Grade 1','Grade 2','Grade 3','Grade 4','Grade 5','Grade 6','Grade 7','Grade 8','Grade 9','Grade 10','Grade 11','Grade 12','Undergraduate','Other'];
 const STREAM_OPTIONS = ['Science (PCM)','Science (PCB)','Science (PCMB)','Commerce','Arts / Humanities','Other'];
@@ -1240,6 +1274,44 @@ async function ensureStudentData(force){
   render();
 }
 
+// Fetches every batch the logged-in student is a member of, plus their
+// classmates in each — a separate query because RLS scopes the second
+// one to batches the student is themselves part of (see the "students
+// can view classmates in their own batches" policy in schema.sql).
+async function ensureStudentBatches(force){
+  if(!state.session || state.profile?.role!=='student') return;
+  if(studentBatchesStatus==='ready' && !force) return;
+  studentBatchesStatus = 'loading';
+  try{
+    const uid = state.session.user.id;
+    const { data: mine, error: e1 } = await sb.from('batch_students')
+      .select('batch_id, batches(id,name,subject,grade,stream,days,time,current_topic,next_class_date,teacher_id, teacher_profiles(profiles(full_name)))')
+      .eq('student_id', uid);
+    if(e1) throw e1;
+    const batchIds = (mine||[]).filter(m=>m.batches).map(m=>m.batch_id);
+    const classmatesByBatch = {};
+    if(batchIds.length){
+      const { data: roster, error: e2 } = await sb.from('batch_students').select('batch_id, student_id, profiles(full_name)').in('batch_id', batchIds);
+      if(e2) throw e2;
+      (roster||[]).forEach(r=>{
+        if(r.student_id === uid) return;
+        (classmatesByBatch[r.batch_id] = classmatesByBatch[r.batch_id] || []).push({ id:r.student_id, name: r.profiles?.full_name || 'Classmate' });
+      });
+    }
+    myStudentBatches = (mine||[]).filter(m=>m.batches).map(m=>({
+      id:m.batches.id, name:m.batches.name, subject:m.batches.subject, grade:m.batches.grade||'', stream:m.batches.stream||'',
+      days:m.batches.days||[], time:m.batches.time||'', currentTopic:m.batches.current_topic||'', nextClassDate:m.batches.next_class_date||'',
+      teacherName: m.batches.teacher_profiles?.profiles?.full_name || 'Teacher',
+      classmates: classmatesByBatch[m.batches.id] || [],
+    }));
+    studentBatchesStatus = 'ready';
+  }catch(err){
+    console.error('Failed to load student batches', err);
+    studentBatchesStatus = 'error';
+  }
+  render();
+}
+
 async function ensureTeacherData(force){
   if(!state.session || state.profile?.role!=='teacher') return;
   if(teacherDataStatus==='ready' && !force) return;
@@ -1247,7 +1319,7 @@ async function ensureTeacherData(force){
   try{
     const uid = state.session.user.id;
     const [{data, error}, {data:enquiries, error:eqErr}, {data:batches, error:bErr}, {data:trials, error:trErr}] = await Promise.all([
-      sb.from('enrollments').select('*, profiles(full_name)').eq('teacher_id', uid).order('created_at',{ascending:false}),
+      sb.from('enrollments').select('*, profiles(full_name, grade)').eq('teacher_id', uid).order('created_at',{ascending:false}),
       sb.from('enquiries').select('*, profiles(full_name)').eq('teacher_id', uid).order('created_at',{ascending:false}),
       sb.from('batches').select('*, batch_students(student_id, profiles(full_name))').eq('teacher_id', uid).order('created_at',{ascending:false}),
       sb.from('trial_requests').select('*, profiles(full_name), batches(name,subject,grade,stream,days,time)').eq('teacher_id', uid).order('created_at',{ascending:false}),
@@ -1258,7 +1330,10 @@ async function ensureTeacherData(force){
     if(trErr) throw trErr;
     myStudents = data.map(e=>({
       enrollmentId:e.id, studentId:e.student_id, name: e.profiles?.full_name || 'Student',
-      grade:e.grade || '—', subject:e.subject, feeStatus:e.status, fee:e.fee, schedule:e.schedule,
+      // a student's grade is set on their own profile (dashboard → My
+      // profile), not per-enrollment — fall back to the enrollment's own
+      // grade column only if the profile one was never set.
+      grade: e.profiles?.grade || e.grade || '—', subject:e.subject, feeStatus:e.status, fee:e.fee, schedule:e.schedule,
     }));
     myEnquiries = enquiries.map(q=>({
       id:q.id, studentId:q.student_id, name: q.profiles?.full_name || 'A parent',
@@ -1267,6 +1342,7 @@ async function ensureTeacherData(force){
     myBatches = batches.map(b=>({
       id:b.id, name:b.name, grade:b.grade||'', stream:b.stream||'', subject:b.subject, days:b.days||[], time:b.time||'',
       description:b.description||'', capacity:b.capacity, status:b.status,
+      currentTopic: b.current_topic||'', nextClassDate: b.next_class_date||'',
       students: (b.batch_students||[]).map(bs=>({id:bs.student_id, name:bs.profiles?.full_name||'Student'})),
     }));
     myTrialRequests = trials.map(r=>({
@@ -1284,14 +1360,60 @@ async function ensureTeacherData(force){
 
 function todayStr(){ return new Date().toISOString().slice(0,10); }
 
+// Fetches everything for a single student's full profile view (opened by
+// a teacher clicking a student's name in Students or a batch's detail
+// view): their grade/stream, every attendance record across the
+// teacher's own batches with them, and every assessment mark they've
+// received from this teacher. RLS already scopes all three queries to
+// just this teacher's own data, so no extra filtering is needed beyond
+// student_id.
+async function ensureStudentProfileDetail(studentId, force){
+  if(studentProfileDetail.id===studentId && studentProfileDetail.status==='ready' && !force) return;
+  studentProfileDetail = { id: studentId, status: 'loading', profile: null, attendance: [], assessments: [] };
+  refreshTeacherPane();
+  try{
+    const [{data:profile, error:pErr}, {data:attendance, error:aErr}, {data:marks, error:mErr}] = await Promise.all([
+      sb.from('profiles').select('full_name, grade, stream').eq('id', studentId).single(),
+      sb.from('attendance').select('*, batches(name,subject)').eq('student_id', studentId).order('date',{ascending:false}),
+      sb.from('assessment_marks').select('*, assessments(title,subject,max_marks,created_at,batches(name))').eq('student_id', studentId).order('created_at',{ascending:false}),
+    ]);
+    if(pErr) throw pErr;
+    if(aErr) throw aErr;
+    if(mErr) throw mErr;
+    if(studentProfileDetail.id !== studentId) return; // switched to a different student while this was loading
+    studentProfileDetail = {
+      id: studentId, status: 'ready', profile,
+      attendance: (attendance||[]).map(a=>({date:a.date, status:a.status, batchName:a.batches?.name||'Batch', subject:a.batches?.subject||''})),
+      assessments: (marks||[]).map(m=>({
+        title: m.assessments?.title||'Assessment', subject: m.assessments?.subject||'', maxMarks: m.assessments?.max_marks||100,
+        batchName: m.assessments?.batches?.name||'', marks: m.marks, remarks: m.remarks||'', createdAt: m.assessments?.created_at||m.created_at,
+      })),
+    };
+  }catch(err){
+    console.error('Failed to load student profile', err);
+    studentProfileDetail.status = 'error';
+  }
+  refreshTeacherPane();
+}
+
+// Renders whatever should be inside #teacherTabPane right now — a
+// student's full profile if one is open, otherwise the active sidebar
+// tab. Centralized so viewTeacherDashboard, refreshTeacherPane, and
+// switchTeacherTab all stay in sync.
+function renderTeacherPane(){
+  if(state.selectedStudentProfileId) return teacherStudentProfileView(state.selectedStudentProfileId);
+  return TEACHER_TAB_MAP[state.teacherTab]();
+}
+
 // Refreshes just the teacher dashboard's active tab pane in place — used
 // after actions that change data behind the currently-open tab (opening
 // a batch's detail view, its attendance loading, etc.) so the rest of
 // the dashboard never flickers.
 function refreshTeacherPane(){
   const pane = document.getElementById('teacherTabPane');
-  if(pane && state.view==='teacherDashboard') pane.innerHTML = TEACHER_TAB_MAP[state.teacherTab]();
+  if(pane && state.view==='teacherDashboard') pane.innerHTML = renderTeacherPane();
 }
+
 
 async function ensureBatchAttendance(batchId, force){
   if(batchAttendanceForId===batchId && batchAttendanceStatus==='ready' && !force) return;
@@ -1460,6 +1582,7 @@ function navbar(){
         <div style="display:flex; gap:10px; align-items:center;">
           <div class="pill ${c==='customer'?'active':''}" data-action="switch-portal" data-portal="customer">👪 Parents</div>
           <div class="pill ${c==='teacher'?'active':''}" data-action="switch-portal" data-portal="teacher">🍎 Teachers</div>
+          ${loggedIn && state.profile?.role==='student' ? `<button class="btn btn-ghost btn-sm notif-bell" data-action="toggle-notif-drawer" title="Notifications" aria-label="Notifications">🔔${myNotifications.filter(n=>!n.readAt).length ? `<span class="notif-bell-badge">${myNotifications.filter(n=>!n.readAt).length}</span>` : ''}</button>` : ''}
           <button class="btn btn-ghost btn-sm" data-action="toggle-theme" title="Switch to ${currentTheme()==='dark'?'light':'dark'} theme" aria-label="Toggle theme">${currentTheme()==='dark' ? '☀️' : '🌙'}</button>
           <button class="btn btn-ghost btn-sm" data-action="go-admin" title="Admin panel" aria-label="Admin panel">🛡️</button>
           ${loggedIn
@@ -1815,12 +1938,53 @@ function viewStudentDashboard(){
 
     <div class="glass" style="padding:6px; display:inline-flex; gap:4px; margin-bottom:22px;">
       <div class="sidebar-link ${state.studentTab==='overview'?'active':''}" style="padding:9px 16px;" data-action="student-tab" data-tab="overview">📊 Overview</div>
+      <div class="sidebar-link ${state.studentTab==='batches'?'active':''}" style="padding:9px 16px;" data-action="student-tab" data-tab="batches">📚 Batches</div>
       <div class="sidebar-link ${state.studentTab==='notifications'?'active':''}" style="padding:9px 16px; display:flex; align-items:center; gap:6px;" data-action="student-tab" data-tab="notifications">
         🔔 Notifications ${unread ? `<span class="badge badge-blue" style="padding:2px 8px;">${unread}</span>` : ''}
       </div>
     </div>
 
-    <div id="studentTabPane">${state.studentTab==='notifications' ? studentNotificationsTab() : studentOverviewTab()}</div>
+    <div id="studentTabPane">${state.studentTab==='notifications' ? studentNotificationsTab() : state.studentTab==='batches' ? studentBatchesTab() : studentOverviewTab()}</div>
+  </div>`;
+}
+
+function studentBatchesTab(){
+  if(studentBatchesStatus==='idle') ensureStudentBatches();
+  if(studentBatchesStatus==='loading' || studentBatchesStatus==='idle'){
+    return `<div class="glass" style="padding:22px;">
+      <div class="skel skel-line" style="width:170px; margin-bottom:20px;"></div>
+      <div style="display:flex; flex-direction:column; gap:12px;">
+        <div class="skel skel-card"></div><div class="skel skel-card"></div>
+      </div>
+    </div>`;
+  }
+  if(studentBatchesStatus==='error'){
+    return `<div class="glass" style="padding:22px;"><p class="muted" style="font-size:13.5px;">Couldn't load your batches. Try again.</p></div>`;
+  }
+  return `
+  <div class="glass" style="padding:22px;">
+    <h3 style="font-size:15.5px; margin-bottom:16px;">My batches</h3>
+    ${myStudentBatches.length ? `<div style="display:flex; flex-direction:column; gap:14px;">
+      ${myStudentBatches.map(b=>`
+      <div class="glass" style="padding:18px;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+          <div>
+            <div style="font-weight:700; font-size:14.5px;">${escapeHtml(b.name)}</div>
+            <div class="muted" style="font-size:12.5px; margin-top:4px;">${escapeHtml(b.subject)}${b.grade?' · '+escapeHtml(b.grade):''} · with ${escapeHtml(b.teacherName)} · ${(b.days||[]).join(', ')||'Days TBC'} · ${escapeHtml(b.time)||'Time TBC'}</div>
+          </div>
+        </div>
+        ${(b.currentTopic || b.nextClassDate) ? `<div style="display:flex; gap:16px; margin-top:10px; flex-wrap:wrap; font-size:12.5px;" class="muted">
+          ${b.currentTopic ? `<span>📖 Currently on: <strong style="color:var(--text);">${escapeHtml(b.currentTopic)}</strong></span>` : ''}
+          ${b.nextClassDate ? `<span>📅 Next class: <strong style="color:var(--text);">${new Date(b.nextClassDate+'T00:00:00').toLocaleDateString()}</strong></span>` : ''}
+        </div>` : ''}
+        <div style="margin-top:12px;">
+          <div class="field-label" style="margin-bottom:6px;">Classmates (${b.classmates.length})</div>
+          ${b.classmates.length ? `<div style="display:flex; flex-wrap:wrap; gap:6px;">
+            ${b.classmates.map(c=>`<span class="badge">${escapeHtml(c.name)}</span>`).join('')}
+          </div>` : `<p class="muted" style="font-size:12.5px;">No classmates in this batch yet.</p>`}
+        </div>
+      </div>`).join('')}
+    </div>` : `<p class="muted" style="font-size:13.5px;">You're not in any batches yet — a teacher adds you once you're enrolled.</p>`}
   </div>`;
 }
 
@@ -2011,8 +2175,8 @@ function teacherOverview(){
   const pending = myStudents.filter(s=>s.feeStatus!=='paid').length;
   return `
   <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:20px;" class="grid-2">
-    <div class="glass stat-card"><div class="eyebrow">Total students</div><div class="stat-num">${myStudents.length}</div></div>
-    <div class="glass stat-card"><div class="eyebrow">Pending payments</div><div class="stat-num" style="color:var(--amber)">${pending}</div></div>
+    <div class="glass stat-card" style="cursor:pointer;" data-action="view-all-students"><div class="eyebrow">Total students</div><div class="stat-num">${myStudents.length}</div></div>
+    <div class="glass stat-card" style="cursor:pointer;" data-action="view-pending-students"><div class="eyebrow">Pending payments</div><div class="stat-num" style="color:var(--amber)">${pending}</div></div>
     <div class="glass stat-card" style="cursor:pointer;" data-action="teacher-tab" data-tab="enquiries"><div class="eyebrow">Enquiries</div><div class="stat-num" style="color:var(--blue)">${myEnquiries.length}</div></div>
     <div class="glass stat-card"><div class="eyebrow">Rating</div><div class="stat-num">${state.selectedTeacherProfile?.rating ?? '—'}</div></div>
   </div>
@@ -2026,15 +2190,23 @@ function teacherOverview(){
 }
 
 function teacherStudents(){
+  const pendingCount = myStudents.filter(s=>s.feeStatus!=='paid').length;
+  const filtered = state.studentsFilter==='pending' ? myStudents.filter(s=>s.feeStatus!=='paid') : myStudents;
   return `
   <div class="glass" style="padding:22px;">
-    <h3 style="font-size:15.5px; margin-bottom:16px;">My students</h3>
-    ${myStudents.length ? `<table class="data-table">
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:16px;">
+      <h3 style="font-size:15.5px;">My students ${state.studentsFilter==='pending' ? `<span class="badge badge-amber" style="margin-left:6px;">Pending fees only</span>` : ''}</h3>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        ${state.studentsFilter ? `<button class="btn btn-ghost btn-sm" data-action="clear-students-filter">Show all</button>` : ''}
+        ${pendingCount ? `<button class="btn btn-primary btn-sm" data-action="notify-pending-fees">🔔 Notify pending fees (${pendingCount})</button>` : ''}
+      </div>
+    </div>
+    ${filtered.length ? `<table class="data-table">
       <thead><tr><th>Name</th><th>Grade</th><th>Subject</th><th>Fee status</th><th>Fee</th><th></th></tr></thead>
       <tbody>
-        ${myStudents.map(s=>`
+        ${filtered.map(s=>`
         <tr>
-          <td style="font-weight:600;">${s.name}</td>
+          <td style="font-weight:600; cursor:pointer; color:var(--primary);" data-action="open-student-profile" data-id="${s.studentId}">${s.name}</td>
           <td class="muted">${s.grade}</td>
           <td class="muted">${s.subject}</td>
           <td><span class="badge ${s.feeStatus==='paid'?'badge-green':s.feeStatus==='due'?'badge-amber':'badge-red'}">${s.feeStatus.toUpperCase()}</span></td>
@@ -2042,7 +2214,7 @@ function teacherStudents(){
           <td><button class="btn btn-ghost btn-sm" data-action="open-chat" data-teacher="${state.session.user.id}" data-student="${s.studentId}" data-name="${s.name}">💬 Chat</button></td>
         </tr>`).join('')}
       </tbody>
-    </table>` : `<p class="muted" style="font-size:13.5px;">No students enrolled yet. Share your profile link so parents can find you.</p>`}
+    </table>` : (state.studentsFilter ? `<p class="muted" style="font-size:13.5px;">No students with pending fees right now. 🎉</p>` : `<p class="muted" style="font-size:13.5px;">No students enrolled yet. Share your profile link so parents can find you.</p>`)}
   </div>`;
 }
 
@@ -2107,10 +2279,15 @@ function batchDetailView(batchId){
       </div>
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
         <button class="btn btn-primary btn-sm" data-action="open-notify-batch" data-id="${b.id}">📣 Notify students</button>
+        <button class="btn btn-primary btn-sm" data-action="open-assessment-modal" data-id="${b.id}">📝 Send assessment marks</button>
         <button class="btn btn-ghost btn-sm" data-action="open-batch-modal" data-id="${b.id}">✏️ Edit</button>
       </div>
     </div>
     ${b.description ? `<p class="muted" style="font-size:13px; margin-top:8px; line-height:1.5;">${escapeHtml(b.description)}</p>` : ''}
+    ${(b.currentTopic || b.nextClassDate) ? `<div style="display:flex; gap:16px; margin-top:10px; flex-wrap:wrap; font-size:12.5px;" class="muted">
+      ${b.currentTopic ? `<span>📖 Currently on: <strong style="color:var(--text);">${escapeHtml(b.currentTopic)}</strong></span>` : ''}
+      ${b.nextClassDate ? `<span>📅 Next class: <strong style="color:var(--text);">${new Date(b.nextClassDate+'T00:00:00').toLocaleDateString()}</strong></span>` : ''}
+    </div>` : ''}
 
     <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin:18px 0;" class="grid-2">
       <div class="glass stat-card" style="padding:16px;"><div class="eyebrow">Students</div><div class="stat-num" style="font-size:22px;">${b.students.length}${b.capacity?'/'+b.capacity:''}</div></div>
@@ -2126,7 +2303,7 @@ function batchDetailView(batchId){
         const c = attendanceCounts(batchId, s.id);
         return `<details style="border-radius:12px; background:var(--divider-soft); overflow:hidden;">
           <summary style="cursor:pointer; padding:12px 14px; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; list-style:none;">
-            <span style="font-weight:600; font-size:13.5px;">${escapeHtml(s.name)}</span>
+            <span style="font-weight:600; font-size:13.5px; color:var(--primary); cursor:pointer;" data-action="open-student-profile" data-id="${s.id}" onclick="event.preventDefault()">${escapeHtml(s.name)}</span>
             <span style="display:flex; gap:8px; align-items:center;">
               ${loadingAttendance ? `<span class="skel skel-line" style="width:90px; display:inline-block;"></span>` : `<span class="muted" style="font-size:11.5px;">✅ ${c.present} · ❌ ${c.absent} · ⏰ ${c.late}</span>`}
               ${enr ? `<span class="badge ${enr.feeStatus==='paid'?'badge-green':enr.feeStatus==='due'?'badge-amber':'badge-red'}" id="feeBadge-${batchId}-${s.id}">${enr.feeStatus.toUpperCase()}</span>` : `<span class="badge">NO ENROLLMENT</span>`}
@@ -2154,6 +2331,64 @@ function batchDetailView(batchId){
         </details>`;
       }).join('')}
     </div>`}
+  </div>`;
+}
+
+// Full profile view for one student, opened by a teacher clicking their
+// name from Students or a batch's detail view. Shows their grade/stream,
+// every enrollment with this teacher, every attendance record across the
+// teacher's own batches with them, and every assessment mark they've
+// received — plus a chat shortcut. Backed by ensureStudentProfileDetail().
+function teacherStudentProfileView(studentId){
+  if(studentProfileDetail.id!==studentId || studentProfileDetail.status==='idle'){ ensureStudentProfileDetail(studentId); }
+  const loading = studentProfileDetail.id!==studentId || studentProfileDetail.status==='loading';
+  const backBtn = `<button class="btn btn-ghost btn-sm" style="margin-bottom:14px;" data-action="back-to-students">← Back</button>`;
+  if(loading){
+    return `<div class="glass" style="padding:22px;">${backBtn}${teacherTabSkeleton()}</div>`;
+  }
+  if(studentProfileDetail.status==='error'){
+    return `<div class="glass" style="padding:22px;">${backBtn}<p class="muted" style="font-size:13.5px;">Couldn't load this student's profile. Try again.</p></div>`;
+  }
+  const p = studentProfileDetail.profile;
+  const enrollments = myStudents.filter(s=>s.studentId===studentId);
+  const attendance = studentProfileDetail.attendance;
+  const presentCount = attendance.filter(a=>a.status==='present').length;
+  const assessments = studentProfileDetail.assessments;
+  return `
+  <div class="glass" style="padding:22px;">
+    ${backBtn}
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+      <div>
+        <div style="font-weight:700; font-size:19px;">${escapeHtml(p?.full_name || 'Student')}</div>
+        <div class="muted" style="font-size:13px; margin-top:4px;">${escapeHtml(p?.grade || 'Grade not set')}${p?.stream ? ' · '+escapeHtml(p.stream) : ''}</div>
+      </div>
+      <button class="btn btn-primary btn-sm" data-action="open-chat" data-teacher="${state.session.user.id}" data-student="${studentId}" data-name="${escapeHtml(p?.full_name||'Student')}">💬 Chat</button>
+    </div>
+
+    <h4 style="font-size:14px; margin:22px 0 10px;">Enrollments with you</h4>
+    ${enrollments.length ? `<table class="data-table">
+      <thead><tr><th>Subject</th><th>Fee status</th><th>Fee</th></tr></thead>
+      <tbody>${enrollments.map(e=>`<tr><td style="font-weight:600;">${escapeHtml(e.subject)}</td><td><span class="badge ${e.feeStatus==='paid'?'badge-green':e.feeStatus==='due'?'badge-amber':'badge-red'}">${e.feeStatus.toUpperCase()}</span></td><td class="muted">₹${e.fee}</td></tr>`).join('')}</tbody>
+    </table>` : `<p class="muted" style="font-size:13px;">No enrollments with you.</p>`}
+
+    <h4 style="font-size:14px; margin:22px 0 10px;">Attendance ${attendance.length ? `<span class="muted" style="font-weight:400; font-size:12px;">(${presentCount}/${attendance.length} present)</span>` : ''}</h4>
+    ${attendance.length ? `<div style="display:flex; flex-direction:column; gap:6px; max-height:240px; overflow-y:auto;">
+      ${attendance.map(a=>`<div style="display:flex; justify-content:space-between; align-items:center; padding:8px 12px; border-radius:10px; background:var(--divider-soft); font-size:12.5px;">
+        <span>${new Date(a.date+'T00:00:00').toLocaleDateString()} · ${escapeHtml(a.batchName)}${a.subject?' — '+escapeHtml(a.subject):''}</span>
+        <span class="badge ${a.status==='present'?'badge-green':a.status==='absent'?'badge-red':'badge-amber'}">${a.status.toUpperCase()}</span>
+      </div>`).join('')}
+    </div>` : `<p class="muted" style="font-size:13px;">No attendance recorded yet.</p>`}
+
+    <h4 style="font-size:14px; margin:22px 0 10px;">Assessment marks</h4>
+    ${assessments.length ? `<table class="data-table">
+      <thead><tr><th>Assessment</th><th>Subject</th><th>Score</th><th>Remarks</th></tr></thead>
+      <tbody>${assessments.map(a=>`<tr>
+        <td style="font-weight:600;">${escapeHtml(a.title)}<div class="muted" style="font-size:11px;">${escapeHtml(a.batchName)} · ${new Date(a.createdAt).toLocaleDateString()}</div></td>
+        <td class="muted">${escapeHtml(a.subject)}</td>
+        <td style="font-family:var(--mono); font-weight:700;">${a.marks}/${a.maxMarks}</td>
+        <td class="muted">${escapeHtml(a.remarks)||'—'}</td>
+      </tr>`).join('')}</tbody>
+    </table>` : `<p class="muted" style="font-size:13px;">No assessment marks recorded yet.</p>`}
   </div>`;
 }
 
@@ -2321,7 +2556,7 @@ function viewTeacherDashboard(){
     </div>
     <div class="dash-layout">
       <div id="teacherSidebarPane">${teacherSidebar()}</div>
-      <div id="teacherTabPane" class="pane-fade">${TEACHER_TAB_MAP[state.teacherTab]()}</div>
+      <div id="teacherTabPane" class="pane-fade">${renderTeacherPane()}</div>
     </div>
   </div>`;
 }
@@ -2348,9 +2583,10 @@ function teacherTabSkeleton(){
 // though the underlying data (loaded up front by ensureTeacherData) is
 // already in memory — except for Profile, which fetches fresh data.
 async function switchTeacherTab(tab){
-  if(state.teacherTab === tab) return;
+  if(state.teacherTab === tab && !state.selectedStudentProfileId) return;
   state.teacherTab = tab;
   state.selectedBatchId = null;
+  state.selectedStudentProfileId = null;
   const sidebarPane = document.getElementById('teacherSidebarPane');
   const pane = document.getElementById('teacherTabPane');
   if(!pane){ render(); return; }
@@ -2373,7 +2609,7 @@ async function switchTeacherTab(tab){
   if(state.teacherTab !== tab) return; // the user already switched to a different tab while this was loading
   const freshPane = document.getElementById('teacherTabPane');
   if(!freshPane) return;
-  freshPane.innerHTML = TEACHER_TAB_MAP[tab]();
+  freshPane.innerHTML = renderTeacherPane();
   freshPane.classList.add('pane-fade');
 }
 
@@ -2629,6 +2865,39 @@ function renderChatDock(){
     root.appendChild(el);
   }
   el.innerHTML = shape==='dock' ? (chatWidgetView==='thread' ? chatThreadHTML() : chatInboxHTML()) : chatBubbleInnerHTML();
+}
+
+// The notification bell's dropdown — mounted outside #app (like the chat
+// dock) so it survives full-page re-renders without losing its open/
+// closed state. Only ever shown for a logged-in student; a teacher has
+// nothing to open here since notifications only ever flow teacher→student.
+function renderNotifDrawer(){
+  let root = document.getElementById('notifDrawerRoot');
+  if(!root){ root = document.createElement('div'); root.id='notifDrawerRoot'; document.body.appendChild(root); }
+  const canShow = state.session && state.profile?.role==='student' && state.notifDrawerOpen;
+  if(!canShow){ root.innerHTML = ''; return; }
+  const icons = { trial_approved:'✅', trial_declined:'✖️', batch_update:'📅', batch_cancelled:'🚫', fee_reminder:'💰', assessment:'📝', general:'🔔' };
+  const unread = myNotifications.filter(n=>!n.readAt).length;
+  root.innerHTML = `<div class="glass notif-drawer">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <h3 style="font-size:15px;">🔔 Notifications</h3>
+      <div style="display:flex; gap:8px; align-items:center;">
+        ${unread ? `<button class="btn btn-ghost btn-sm" data-action="mark-all-notifs-read" style="padding:4px 10px; font-size:11.5px;">Mark all read</button>` : ''}
+        <button class="btn btn-ghost btn-sm" data-action="toggle-notif-drawer" style="padding:4px 10px; font-size:11.5px;">✕</button>
+      </div>
+    </div>
+    ${myNotifications.length ? `<div style="display:flex; flex-direction:column; gap:8px;">
+      ${myNotifications.slice(0,30).map(n=>`
+      <div style="display:flex; gap:10px; padding:12px; border-radius:10px; background:${n.readAt?'var(--divider-soft)':'#6C5CE711'}; border:1px solid ${n.readAt?'transparent':'#6C5CE733'}; cursor:${n.readAt?'default':'pointer'};" ${n.readAt?'':`data-action="mark-notif-read" data-id="${n.id}"`}>
+        <div style="font-size:17px;">${icons[n.type]||'🔔'}</div>
+        <div style="flex:1; min-width:0;">
+          <div style="font-weight:700; font-size:13px;">${escapeHtml(n.title)}</div>
+          <div class="muted" style="font-size:11px; margin-top:1px;">from ${escapeHtml(n.teacherName)} · ${new Date(n.createdAt).toLocaleString()}</div>
+          ${n.message ? `<p style="font-size:12.5px; margin-top:6px; line-height:1.5;">${escapeHtml(n.message)}</p>` : ''}
+        </div>
+      </div>`).join('')}
+    </div>` : `<p class="muted" style="font-size:13px;">Nothing here yet.</p>`}
+  </div>`;
 }
 
 function locationPromptModal(){
@@ -2890,11 +3159,15 @@ function subscribeSessionRealtime(){
           title:n.title, message:n.message||'', readAt:n.read_at, createdAt:n.created_at,
         };
         if(!myNotifications.some(x=>x.id===entry.id)) myNotifications.unshift(entry);
+        playNotifSound();
         toast('🔔 ' + escapeHtml(entry.title), 'info', ()=>{
           state.studentTab = 'notifications';
           nav('studentDashboard');
         });
-        if(state.view==='studentDashboard') render();
+        // Always re-render (not just on the dashboard) so the navbar
+        // bell's unread badge updates the instant this arrives, no
+        // matter what page the student is currently looking at.
+        render();
       });
     })
     .subscribe();
@@ -3022,6 +3295,29 @@ function playPingSound(){
     g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.28);
     o.connect(g); g.connect(audioCtx.destination);
     o.start(); o.stop(audioCtx.currentTime + 0.28);
+  }catch(err){ /* audio unavailable/blocked — fine to skip silently */ }
+}
+
+// A distinct two-note chime for a teacher's notification landing (fee
+// reminders, batch updates, new assessment marks, trial responses) — kept
+// deliberately different in shape from the chat ping above (which is a
+// single quick blip) so the two are easy to tell apart by ear alone.
+function playNotifSound(){
+  try{
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if(audioCtx.state === 'suspended') audioCtx.resume();
+    const now = audioCtx.currentTime;
+    [ [660, now], [990, now + 0.14] ].forEach(([freq, at])=>{
+      const o = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      o.type = 'triangle';
+      o.frequency.setValueAtTime(freq, at);
+      g.gain.setValueAtTime(0.0001, at);
+      g.gain.exponentialRampToValueAtTime(0.14, at + 0.012);
+      g.gain.exponentialRampToValueAtTime(0.0001, at + 0.22);
+      o.connect(g); g.connect(audioCtx.destination);
+      o.start(at); o.stop(at + 0.22);
+    });
   }catch(err){ /* audio unavailable/blocked — fine to skip silently */ }
 }
 
@@ -3498,6 +3794,10 @@ function batchModal(batchId){
       <div class="field"><label class="field-label">Capacity (optional)</label><input class="input" id="bmCapacity" type="number" min="1" value="${b&&b.capacity!=null?b.capacity:''}" placeholder="Unlimited"/></div>
     </div>
     <div class="field"><label class="field-label">Description</label><textarea class="input" id="bmDescription" rows="3" placeholder="What this batch covers, pace, expectations...">${b?escapeHtml(b.description):''}</textarea></div>
+    <div class="grid-2" style="gap:12px;">
+      <div class="field"><label class="field-label">Current chapter/topic (optional)</label><input class="input" id="bmCurrentTopic" value="${b?escapeHtml(b.currentTopic||''):''}" placeholder="e.g. Quadratic Equations"/></div>
+      <div class="field"><label class="field-label">Next class date (optional)</label><input class="input" id="bmNextClassDate" type="date" value="${b&&b.nextClassDate?b.nextClassDate:''}"/></div>
+    </div>
     <div class="field"><label class="field-label">Status</label>
       <select class="input" id="bmStatus">
         <option value="active" ${!b||b.status==='active'?'selected':''}>Active — visible to students</option>
@@ -3553,6 +3853,36 @@ function notifyBatchModal(batchId){
     <div style="display:flex; gap:10px; margin-top:6px;">
       <button class="btn btn-ghost btn-block" data-action="close-modal">Cancel</button>
       <button class="btn btn-primary btn-block" data-action="submit-notify-batch" data-id="${batchId}">Send</button>
+    </div>
+  </div>`;
+}
+
+// Lets a teacher record marks for a test/quiz and send them to every
+// student in a batch at once. Marks are per-student and optional (a
+// teacher can leave a field blank for a student who didn't take the
+// assessment); only rows with a mark entered get inserted, and each of
+// those students gets a notification with their score.
+function assessmentModal(batchId){
+  const b = myBatches.find(x=>x.id===batchId);
+  if(!b) return '';
+  return `<div class="glass modal">
+    <h3 style="font-size:18px; margin-bottom:4px;">Send assessment marks — ${escapeHtml(b.name)}</h3>
+    <p class="muted" style="font-size:13px; margin-bottom:18px;">Each student below gets a notification with their own score.</p>
+    <div class="grid-2" style="gap:12px;">
+      <div class="field"><label class="field-label">Assessment title</label><input class="input" id="asTitle" placeholder="e.g. Unit 3 Test"/></div>
+      <div class="field"><label class="field-label">Max marks</label><input class="input" id="asMaxMarks" type="number" min="1" value="100"/></div>
+    </div>
+    <div class="field"><label class="field-label">Subject</label><input class="input" id="asSubject" value="${escapeHtml(b.subject)}"/></div>
+    ${b.students.length ? `<div style="max-height:280px; overflow-y:auto; display:flex; flex-direction:column; gap:8px; margin-top:6px;">
+      ${b.students.map(s=>`
+      <div style="display:flex; align-items:center; gap:10px; padding:8px 12px; border-radius:10px; background:var(--divider-soft);">
+        <span style="flex:1; font-size:13.5px; font-weight:600;">${escapeHtml(s.name)}</span>
+        <input class="input asMarkInput" data-student="${s.id}" data-name="${escapeHtml(s.name)}" type="number" min="0" placeholder="Marks" style="width:90px;"/>
+      </div>`).join('')}
+    </div>` : `<p class="muted" style="font-size:13px;">This batch has no students yet.</p>`}
+    <div style="display:flex; gap:10px; margin-top:16px;">
+      <button class="btn btn-ghost btn-block" data-action="close-modal">Cancel</button>
+      <button class="btn btn-primary btn-block" data-action="submit-assessment" data-id="${batchId}">Send marks</button>
     </div>
   </div>`;
 }
@@ -3736,6 +4066,7 @@ function render(){
   if(state.maintenanceMode && state.profile?.role!=='admin'){
     document.getElementById('app').innerHTML = viewMaintenance();
     renderChatDock();
+    renderNotifDrawer();
     return;
   }
   if(state.session && awaitingOAuthName){
@@ -3766,6 +4097,7 @@ function render(){
   }
   document.getElementById('app').innerHTML = html;
   renderChatDock();
+  renderNotifDrawer();
 }
 
 document.addEventListener('click', (e)=>{
@@ -4020,8 +4352,14 @@ document.addEventListener('click', (e)=>{
       sb.from('enrollments').insert({
         student_id: state.session.user.id, teacher_id: t.id, subject: t.subjects[0]||'General',
         schedule: (t.schedule[0] ? `${t.schedule[0].day} ${t.schedule[0].time}` : ''), fee: t.feeStart, status:'due',
+        grade: state.profile?.grade || null,
       }).then(({error})=>{
-        if(error){ toast('❌ ' + error.message, 'err'); return; }
+        if(error){
+          // 23505 = unique_violation — the DB-level guard against
+          // enrolling twice in the same subject with the same teacher.
+          if(error.code === '23505'){ toast('You\'re already enrolled with ' + t.name + ' for this subject', 'warn'); nav('studentDashboard'); return; }
+          toast('❌ ' + error.message, 'err'); return;
+        }
         toast('✅ Enrolled with ' + t.name + '!', 'ok');
         studentDataStatus = 'idle';
         nav('studentDashboard');
@@ -4080,6 +4418,33 @@ document.addEventListener('click', (e)=>{
       render();
       break;
     }
+    case 'toggle-notif-drawer':
+      state.notifDrawerOpen = !state.notifDrawerOpen;
+      renderNotifDrawer();
+      break;
+    case 'mark-notif-read': {
+      const id = parseInt(el.dataset.id);
+      const n = myNotifications.find(x=>x.id===id);
+      if(!n || n.readAt) break;
+      const now = new Date().toISOString();
+      n.readAt = now;
+      renderNotifDrawer();
+      sb.from('notifications').update({ read_at: now }).eq('id', id).then(({error})=>{
+        if(error) console.error('Failed to mark notification read', error);
+      });
+      break;
+    }
+    case 'mark-all-notifs-read': {
+      const unreadIds = myNotifications.filter(n=>!n.readAt).map(n=>n.id);
+      if(!unreadIds.length) break;
+      const now = new Date().toISOString();
+      myNotifications.forEach(n=>{ if(!n.readAt) n.readAt = now; });
+      renderNotifDrawer();
+      sb.from('notifications').update({ read_at: now }).in('id', unreadIds).then(({error})=>{
+        if(error) console.error('Failed to mark notifications read', error);
+      });
+      break;
+    }
     case 'open-batch-modal':
       openModal(batchModal(el.dataset.id ? parseInt(el.dataset.id) : null));
       break;
@@ -4096,9 +4461,11 @@ document.addEventListener('click', (e)=>{
       const capacityRaw = document.getElementById('bmCapacity').value;
       const capacity = capacityRaw ? parseInt(capacityRaw) : null;
       const description = document.getElementById('bmDescription').value.trim();
+      const currentTopic = document.getElementById('bmCurrentTopic').value.trim();
+      const nextClassDateRaw = document.getElementById('bmNextClassDate').value;
       const status = document.getElementById('bmStatus').value;
       if(!name || !subject){ toast('Please fill in at least a name and subject', 'warn'); return; }
-      const payload = { teacher_id: uid, name, grade, stream, subject, days, time, capacity, description, status };
+      const payload = { teacher_id: uid, name, grade, stream, subject, days, time, capacity, description, status, current_topic: currentTopic, next_class_date: nextClassDateRaw || null };
       setBtnLoading(el, true);
       (idRaw
         ? sb.from('batches').update(payload).eq('id', parseInt(idRaw))
@@ -4151,6 +4518,41 @@ document.addEventListener('click', (e)=>{
       state.selectedBatchId = null;
       refreshTeacherPane();
       break;
+    case 'open-student-profile':
+      state.selectedStudentProfileId = el.dataset.id;
+      if(studentProfileDetail.id !== el.dataset.id) studentProfileDetail = { id: null, status: 'idle', profile: null, attendance: [], assessments: [] };
+      refreshTeacherPane();
+      break;
+    case 'back-to-students':
+      state.selectedStudentProfileId = null;
+      refreshTeacherPane();
+      break;
+    case 'view-all-students':
+      state.studentsFilter = null;
+      if(state.teacherTab==='students') refreshTeacherPane(); else switchTeacherTab('students');
+      break;
+    case 'view-pending-students':
+      state.studentsFilter = 'pending';
+      if(state.teacherTab==='students') refreshTeacherPane(); else switchTeacherTab('students');
+      break;
+    case 'clear-students-filter':
+      state.studentsFilter = null;
+      refreshTeacherPane();
+      break;
+    case 'notify-pending-fees': {
+      const pending = myStudents.filter(s=>s.feeStatus!=='paid');
+      if(!pending.length){ toast('No pending fees to remind students about', 'info'); return; }
+      setBtnLoading(el, true);
+      const rows = pending.map(s=>({
+        student_id: s.studentId, teacher_id: state.session.user.id, type: 'fee_reminder',
+        title: `Fee reminder — ${s.subject}`, message: `₹${s.fee} is due for ${s.subject}. Please pay at your earliest convenience.`,
+      }));
+      sb.from('notifications').insert(rows).then(({error})=>{
+        if(error){ toast('❌ ' + error.message, 'err'); return; }
+        toast('🔔 Reminded ' + pending.length + ' student' + (pending.length!==1?'s':'') + ' about pending fees', 'ok');
+      }).finally(()=>setBtnLoading(el, false));
+      break;
+    }
     case 'mark-attendance': {
       const batchId = parseInt(el.dataset.batch), studentId = el.dataset.student, status = el.dataset.status;
       const date = todayStr();
@@ -4215,6 +4617,43 @@ document.addEventListener('click', (e)=>{
         if(error){ toast('❌ ' + error.message, 'err'); return; }
         closeModal();
         toast('📣 Notified ' + b.students.length + ' student' + (b.students.length!==1?'s':''), 'ok');
+      }).finally(()=>setBtnLoading(el, false));
+      break;
+    }
+    case 'open-assessment-modal':
+      openModal(assessmentModal(parseInt(el.dataset.id)));
+      break;
+    case 'submit-assessment': {
+      const batchId = parseInt(el.dataset.id);
+      const b = myBatches.find(x=>x.id===batchId);
+      const title = document.getElementById('asTitle').value.trim();
+      const maxMarksRaw = document.getElementById('asMaxMarks').value;
+      const maxMarks = maxMarksRaw ? parseInt(maxMarksRaw) : 100;
+      const subject = document.getElementById('asSubject').value.trim() || b.subject;
+      const entries = Array.from(document.querySelectorAll('.asMarkInput'))
+        .map(inp=>({ studentId: inp.dataset.student, name: inp.dataset.name, marks: inp.value.trim() }))
+        .filter(x=>x.marks !== '');
+      if(!title){ toast('Please add an assessment title', 'warn'); return; }
+      if(!entries.length){ toast('Enter at least one student\'s marks', 'warn'); return; }
+      setBtnLoading(el, true);
+      (async ()=>{
+        const { data: assessment, error: aErr } = await sb.from('assessments')
+          .insert({ batch_id: batchId, teacher_id: state.session.user.id, subject, title, max_marks: maxMarks })
+          .select().single();
+        if(aErr) throw aErr;
+        const markRows = entries.map(e=>({ assessment_id: assessment.id, student_id: e.studentId, marks: parseFloat(e.marks) }));
+        const { error: mErr } = await sb.from('assessment_marks').insert(markRows);
+        if(mErr) throw mErr;
+        const notifRows = entries.map(e=>({
+          student_id: e.studentId, teacher_id: state.session.user.id, batch_id: batchId, type: 'assessment',
+          title: `New marks: ${title}`, message: `You scored ${e.marks}/${maxMarks} in ${title} (${subject}).`,
+        }));
+        await sb.from('notifications').insert(notifRows);
+        closeModal();
+        toast('📝 Sent marks to ' + entries.length + ' student' + (entries.length!==1?'s':''), 'ok');
+        if(state.selectedStudentProfileId) ensureStudentProfileDetail(state.selectedStudentProfileId, true);
+      })().catch(err=>{
+        toast('❌ ' + err.message, 'err');
       }).finally(()=>setBtnLoading(el, false));
       break;
     }
