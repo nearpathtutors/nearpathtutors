@@ -50,6 +50,11 @@ create table enquiries (
 );
 
 -- 5) enrollments: a student enrolled with a teacher for a subject
+-- approval_status: a student enrolling creates a 'pending' row, invisible
+-- to the student as an active enrollment and excluded from anything that
+-- depends on being properly enrolled (fee display, batch assignment,
+-- reviews) until the teacher accepts it from their dashboard, flipping
+-- it to 'approved'. Declining an enrollment just deletes the row.
 create table enrollments (
   id bigserial primary key,
   student_id uuid not null references profiles(id) on delete cascade,
@@ -58,6 +63,7 @@ create table enrollments (
   schedule text default '',
   fee int default 0,
   status text not null default 'due' check (status in ('due','overdue','paid')),
+  approval_status text not null default 'pending' check (approval_status in ('pending','approved')),
   due_date date,
   grade text,
   created_at timestamptz not null default now(),
@@ -183,7 +189,7 @@ create table notifications (
   -- to any one teacher (see the 'admin_broadcast' type below)
   teacher_id uuid references teacher_profiles(profile_id) on delete cascade,
   batch_id bigint references batches(id) on delete set null,
-  type text not null default 'general' check (type in ('trial_approved','trial_declined','batch_update','batch_cancelled','fee_reminder','assessment','admin_broadcast','general')),
+  type text not null default 'general' check (type in ('trial_approved','trial_declined','batch_update','batch_cancelled','fee_reminder','assessment','enrollment_approved','admin_broadcast','general')),
   title text not null,
   message text default '',
   read_at timestamptz,
@@ -201,7 +207,7 @@ create table teacher_notifications (
   teacher_id uuid not null references teacher_profiles(profile_id) on delete cascade,
   student_id uuid references profiles(id) on delete set null,
   enrollment_id bigint references enrollments(id) on delete set null,
-  type text not null default 'general' check (type in ('new_enrollment','new_enquiry','fee_paid','admin_broadcast','general')),
+  type text not null default 'general' check (type in ('new_enrollment','new_enquiry','fee_paid','trial_request','admin_broadcast','general')),
   title text not null,
   message text default '',
   read_at timestamptz,
@@ -535,6 +541,24 @@ begin
     where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'assessment_marks'
   ) then
     alter publication supabase_realtime add table assessment_marks;
+  end if;
+  -- enrollments: so a teacher's dashboard shows a new enrollment request
+  -- the instant a student enrolls, and a student's dashboard shows their
+  -- enrollment go live the instant a teacher accepts it — both without a
+  -- refresh.
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'enrollments'
+  ) then
+    alter publication supabase_realtime add table enrollments;
+  end if;
+  -- batch_students: so a student's "My batches" tab picks up being added
+  -- to (or removed from) a batch instantly.
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'batch_students'
+  ) then
+    alter publication supabase_realtime add table batch_students;
   end if;
 end $$;
 
@@ -1021,6 +1045,45 @@ grant execute on function mark_messages_read(uuid) to authenticated;
 -- (enrollments.created_at already exists from the original schema — every
 -- enrollment has always had its date recorded; this update just surfaces
 -- it in the UI, so no column change is needed for that part.)
+
+-- ---------------------------------------------------------------
+-- MIGRATION (Part 18): enrollments need the teacher's OK before they
+-- count as active, teachers get a persisted (not just live-toast) trial
+-- request notification, students get notified when added to a batch,
+-- and enrollments/batch_students are streamed live. Safe to re-run.
+-- ---------------------------------------------------------------
+-- alter table enrollments add column if not exists approval_status text not null default 'pending';
+-- alter table enrollments drop constraint if exists enrollments_approval_status_check;
+-- alter table enrollments add constraint enrollments_approval_status_check
+--   check (approval_status in ('pending','approved'));
+-- -- every enrollment that already existed before this migration was, in
+-- -- effect, already accepted — don't make it disappear from anyone's
+-- -- dashboard.
+-- update enrollments set approval_status = 'approved' where approval_status = 'pending';
+--
+-- alter table notifications drop constraint if exists notifications_type_check;
+-- alter table notifications add constraint notifications_type_check
+--   check (type in ('trial_approved','trial_declined','batch_update','batch_cancelled','fee_reminder','assessment','enrollment_approved','admin_broadcast','general'));
+--
+-- alter table teacher_notifications drop constraint if exists teacher_notifications_type_check;
+-- alter table teacher_notifications add constraint teacher_notifications_type_check
+--   check (type in ('new_enrollment','new_enquiry','fee_paid','trial_request','admin_broadcast','general'));
+--
+-- do $$
+-- begin
+--   if not exists (
+--     select 1 from pg_publication_tables
+--     where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'enrollments'
+--   ) then
+--     alter publication supabase_realtime add table enrollments;
+--   end if;
+--   if not exists (
+--     select 1 from pg_publication_tables
+--     where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'batch_students'
+--   ) then
+--     alter publication supabase_realtime add table batch_students;
+--   end if;
+-- end $$;
 
 -- ---------------------------------------------------------------
 -- email_exists: lets the "Forgot password" screen tell someone whether
