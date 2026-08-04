@@ -398,6 +398,7 @@ const state = {
   selectedBatchId: null,     // when set, the Batches tab shows that batch's detail view instead of the list
   selectedStudentProfileId: null,  // when set, the teacher dashboard shows that student's full profile instead of the active tab
   studentsFilter: null,      // null | 'pending' — filters the teacher's Students tab to only fee-pending students
+  studentsBatchFilter: null, // null | batch id (string) — filters the teacher's Students tab to one batch's roster
   notifDrawerOpen: false,    // whether the top-bar notification bell's dropdown is open
   studentAuthMode: 'login',   // 'login' | 'signup'
   teacherAuthMode: 'login',
@@ -1636,13 +1637,35 @@ async function setMaintenanceMode(enabled){
 function navbar(){
   const c = state.portal;
   const loggedIn = !!state.session;
-  const maintenanceBanner = (state.maintenanceMode && state.profile?.role==='admin') ? `
+  const role = state.profile?.role; // 'student' | 'teacher' | 'admin' | undefined
+  // Once someone's logged in as a teacher or student, they're locked into
+  // that one experience — no "Parents"/"Teachers" portal switcher, no
+  // register/login prompts for the other role, no glimpse of the other
+  // side's nav links. Anonymous visitors (and admins, who aren't tied to
+  // either portal) still get the full switcher.
+  const lockedRole = loggedIn && (role==='teacher' || role==='student') ? role : null;
+  const maintenanceBanner = (state.maintenanceMode && role==='admin') ? `
   <div class="wrap" style="padding-top:12px;">
     <div class="glass" style="padding:10px 16px; display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; border:1px solid var(--amber); background:rgba(245,166,35,0.08);">
       <span style="font-size:12.5px; font-weight:600; color:var(--amber);">🛠️ Maintenance mode is ON — everyone but you sees the maintenance page right now.</span>
       <button class="btn btn-ghost btn-sm" data-action="toggle-maintenance">Turn off</button>
     </div>
   </div>` : '';
+  const navLinks = lockedRole==='teacher'
+    ? `<button data-action="go" data-view="teacherDashboard">Dashboard</button>`
+    : lockedRole==='student'
+    ? `<button data-action="go" data-view="home">Home</button>
+       <button data-action="go" data-view="browse">Browse Teachers</button>
+       <button data-action="go" data-view="studentDashboard">My Dashboard</button>`
+    : (c==='customer' ? `
+      <button data-action="go" data-view="home">Home</button>
+      <button data-action="go" data-view="browse">Browse Teachers</button>
+    ` : `
+      <button data-action="go" data-view="teacherHome">Overview</button>
+    `);
+  const portalSwitcher = lockedRole ? '' : `
+    <div class="pill ${c==='customer'?'active':''}" data-action="switch-portal" data-portal="customer">👪 Parents</div>
+    <div class="pill ${c==='teacher'?'active':''}" data-action="switch-portal" data-portal="teacher">🍎 Teachers</div>`;
   return `
   ${maintenanceBanner}
   <div class="nav">
@@ -1651,22 +1674,12 @@ function navbar(){
         <div class="logo" style="cursor:pointer" data-action="go-home">
           <div class="logo-mark">🎓</div> NearPath Tutors
         </div>
-        <div class="nav-links">
-          ${c==='customer' ? `
-            <button data-action="go" data-view="home">Home</button>
-            <button data-action="go" data-view="browse">Browse Teachers</button>
-            ${loggedIn && state.profile?.role==='student' ? `<button data-action="go" data-view="studentDashboard">My Dashboard</button>` : ''}
-          ` : `
-            <button data-action="go" data-view="teacherHome">Overview</button>
-            ${loggedIn && state.profile?.role==='teacher' ? `<button data-action="go" data-view="teacherDashboard">Dashboard</button>` : ''}
-          `}
-        </div>
+        <div class="nav-links">${navLinks}</div>
         <div style="display:flex; gap:10px; align-items:center;">
-          <div class="pill ${c==='customer'?'active':''}" data-action="switch-portal" data-portal="customer">👪 Parents</div>
-          <div class="pill ${c==='teacher'?'active':''}" data-action="switch-portal" data-portal="teacher">🍎 Teachers</div>
-          ${loggedIn && (state.profile?.role==='student' || state.profile?.role==='teacher') ? `<button id="notifBellBtn" class="btn btn-ghost btn-sm notif-bell" data-action="toggle-notif-drawer" title="Notifications" aria-label="Notifications">${notifBellInnerHTML()}</button>` : ''}
+          ${portalSwitcher}
+          ${loggedIn && (role==='student' || role==='teacher') ? `<button id="notifBellBtn" class="btn btn-ghost btn-sm notif-bell" data-action="toggle-notif-drawer" title="Notifications" aria-label="Notifications">${notifBellInnerHTML()}</button>` : ''}
           <button class="btn btn-ghost btn-sm" data-action="toggle-theme" title="Switch to ${currentTheme()==='dark'?'light':'dark'} theme" aria-label="Toggle theme">${currentTheme()==='dark' ? '☀️' : '🌙'}</button>
-          <button class="btn btn-ghost btn-sm" data-action="go-admin" title="Admin panel" aria-label="Admin panel">🛡️</button>
+          ${lockedRole ? '' : `<button class="btn btn-ghost btn-sm" data-action="go-admin" title="Admin panel" aria-label="Admin panel">🛡️</button>`}
           ${loggedIn
             ? `<button class="btn btn-ghost btn-sm" data-action="logout">🚪 Log out</button>`
             : `<button class="btn btn-primary btn-sm" data-action="go" data-view="${c==='customer'?'studentAuth':'teacherAuth'}" data-mode="login">Log in</button>`}
@@ -1699,6 +1712,10 @@ function setupMissingScreen(){
    CUSTOMER PORTAL — HOME
 ========================================================= */
 function viewHome(){
+  // A logged-in teacher's navbar no longer links here, but guard the
+  // direct route too (deep link, back button) so they land on their own
+  // dashboard instead of the parent/student marketing page.
+  if(state.session && state.profile?.role==='teacher') return viewTeacherDashboard();
   const featured = TEACHERS.slice(0,6);
   return `
   ${navbar()}
@@ -2094,7 +2111,10 @@ function studentOverviewTab(){
                 <div style="font-weight:600; font-size:13.5px;">${escapeHtml(e.subject)} <span class="muted" style="font-weight:400;">with ${escapeHtml(e.teacherName)}</span></div>
                 <div class="muted" style="font-size:11.5px; margin-top:2px;">🕒 Waiting for ${escapeHtml(e.teacherName)} to accept your request</div>
               </div>
-              <span class="badge badge-amber">PENDING</span>
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span class="badge badge-amber">PENDING</span>
+                <button class="btn btn-ghost btn-sm" data-action="remove-enrollment" data-id="${e.id}" data-name="${escapeHtml(e.teacherName)}" data-subject="${escapeHtml(e.subject)}" title="Withdraw request">✖️</button>
+              </div>
             </div>`).join('')}
           </div>` : ''}
           ${myEnrollments.length ? `<div style="display:flex; flex-direction:column; gap:10px;">
@@ -2115,6 +2135,7 @@ function studentOverviewTab(){
                     ${myReview
                       ? `<span class="badge badge-blue" style="cursor:pointer;" data-action="open-review" data-id="${e.id}">${starString(myReview.rating)[0]} Edit review</span>`
                       : `<button class="btn btn-ghost btn-sm" data-action="open-review" data-id="${e.id}">⭐ Leave a review</button>`}
+                    <button class="btn btn-ghost btn-sm" data-action="remove-enrollment" data-id="${e.id}" data-name="${escapeHtml(e.teacherName)}" data-subject="${escapeHtml(e.subject)}" title="Remove enrollment">🗑️</button>
                   </div>
                 </div>
               </div>`;}).join('')}
@@ -2199,6 +2220,10 @@ function studentNotificationsTab(){
    TEACHER PORTAL — MARKETING HOME
 ========================================================= */
 function viewTeacherHome(){
+  // A logged-in teacher should never land on the marketing/register page —
+  // this can still be reached via a stale link, the back button, or a
+  // deep link, even though the navbar no longer offers a way to click here.
+  if(state.session && state.profile?.role==='teacher') return viewTeacherDashboard();
   return `
   ${navbar()}
   <div class="wrap view-transition" style="padding-top:40px;">
@@ -2288,7 +2313,25 @@ function teacherOverview(){
 
 function teacherStudents(){
   const pendingCount = myStudents.filter(s=>s.feeStatus!=='paid').length;
-  const filtered = state.studentsFilter==='pending' ? myStudents.filter(s=>s.feeStatus!=='paid') : myStudents;
+  const feeFilter = state.studentsFilter;          // null | 'pending'
+  const batchFilter = state.studentsBatchFilter;    // null | batch id (string)
+
+  // Which batch(es) each student belongs to, for this teacher — used for
+  // the Batch column and the batch filter dropdown. A student can be in
+  // more than one batch (e.g. different subjects), so this is a list.
+  const batchesByStudent = {};
+  myBatches.forEach(b=>{
+    b.students.forEach(st=>{
+      (batchesByStudent[st.id] = batchesByStudent[st.id] || []).push(b);
+    });
+  });
+
+  let filtered = myStudents;
+  if(feeFilter==='pending') filtered = filtered.filter(s=>s.feeStatus!=='paid');
+  if(batchFilter) filtered = filtered.filter(s=>(batchesByStudent[s.studentId]||[]).some(b=>String(b.id)===String(batchFilter)));
+
+  const hasActiveFilter = !!(feeFilter || batchFilter);
+
   return `
   ${myPendingEnrollmentRequests.length ? `<div class="glass" style="padding:22px; margin-bottom:16px; border:1px solid var(--amber, #F5A623);">
     <h3 style="font-size:15.5px; margin-bottom:12px;">🕒 Enrollment requests (${myPendingEnrollmentRequests.length})</h3>
@@ -2300,7 +2343,7 @@ function teacherStudents(){
           <div class="muted" style="font-size:12px;">${escapeHtml(r.subject)}${r.schedule?' · '+escapeHtml(r.schedule):''} · ₹${r.fee}</div>
         </div>
         <div style="display:flex; gap:8px;">
-          <button class="btn btn-primary btn-sm" data-action="accept-enrollment" data-id="${r.enrollmentId}">✅ Accept</button>
+          <button class="btn btn-primary btn-sm" data-action="open-accept-enrollment" data-id="${r.enrollmentId}">✅ Accept</button>
           <button class="btn btn-ghost btn-sm" data-action="decline-enrollment" data-id="${r.enrollmentId}">✖️ Decline</button>
         </div>
       </div>`).join('')}
@@ -2308,30 +2351,42 @@ function teacherStudents(){
   </div>` : ''}
   <div class="glass" style="padding:22px;">
     <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:16px;">
-      <h3 style="font-size:15.5px;">My students ${state.studentsFilter==='pending' ? `<span class="badge badge-amber" style="margin-left:6px;">Pending fees only</span>` : ''}</h3>
-      <div style="display:flex; gap:8px; flex-wrap:wrap;">
-        ${state.studentsFilter ? `<button class="btn btn-ghost btn-sm" data-action="clear-students-filter">Show all</button>` : ''}
+      <h3 style="font-size:15.5px;">My students ${feeFilter==='pending' ? `<span class="badge badge-amber" style="margin-left:6px;">Pending fees only</span>` : ''}</h3>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        <select class="input" data-action="students-fee-filter" style="width:auto; padding:8px 10px; font-size:12.5px;">
+          <option value="all" ${!feeFilter?'selected':''}>All fee statuses</option>
+          <option value="pending" ${feeFilter==='pending'?'selected':''}>Fee pending</option>
+        </select>
+        <select class="input" data-action="students-batch-filter" style="width:auto; padding:8px 10px; font-size:12.5px;">
+          <option value="all" ${!batchFilter?'selected':''}>All batches</option>
+          ${myBatches.map(b=>`<option value="${b.id}" ${String(batchFilter)===String(b.id)?'selected':''}>${escapeHtml(b.name)} (${escapeHtml(b.subject)})</option>`).join('')}
+        </select>
+        ${hasActiveFilter ? `<button class="btn btn-ghost btn-sm" data-action="clear-students-filter">Show all</button>` : ''}
         ${pendingCount ? `<button class="btn btn-primary btn-sm" data-action="notify-pending-fees">🔔 Notify pending fees (${pendingCount})</button>` : ''}
       </div>
     </div>
     ${filtered.length ? `<table class="data-table">
-      <thead><tr><th>Name</th><th>Grade</th><th>Subject</th><th>Fee status</th><th>Fee</th><th>Enrolled</th><th></th></tr></thead>
+      <thead><tr><th>Name</th><th>Grade</th><th>Subject</th><th>Batch</th><th>Fee status</th><th>Fee</th><th>Enrolled</th><th></th></tr></thead>
       <tbody>
-        ${filtered.map(s=>`
+        ${filtered.map(s=>{
+          const batchNames = (batchesByStudent[s.studentId]||[]).map(b=>b.name).join(', ');
+          return `
         <tr style="cursor:pointer;" data-action="open-student-profile" data-id="${s.studentId}">
           <td style="font-weight:600;">${escapeHtml(s.name)}</td>
           <td class="muted">${s.grade}</td>
           <td class="muted">${s.subject}</td>
+          <td class="muted">${batchNames ? escapeHtml(batchNames) : '—'}</td>
           <td><span class="badge ${s.feeStatus==='paid'?'badge-green':s.feeStatus==='due'?'badge-amber':'badge-red'}">${s.feeStatus.toUpperCase()}</span></td>
           <td class="muted">₹${s.fee}</td>
           <td class="muted">${s.enrolledAt ? new Date(s.enrolledAt).toLocaleDateString() : '—'}</td>
           <td style="white-space:nowrap;">
             <button class="btn btn-ghost btn-sm" data-action="open-chat" data-teacher="${state.session.user.id}" data-student="${s.studentId}" data-name="${escapeHtml(s.name)}">💬 Chat</button>
             ${s.feeStatus!=='paid' ? `<button class="btn btn-ghost btn-sm" data-action="notify-fee" data-id="${s.enrollmentId}">🔔 Notify fee</button>` : ''}
+            <button class="btn btn-ghost btn-sm" data-action="remove-enrollment" data-id="${s.enrollmentId}" data-name="${escapeHtml(s.name)}" data-subject="${escapeHtml(s.subject)}">🗑️ Remove</button>
           </td>
-        </tr>`).join('')}
+        </tr>`;}).join('')}
       </tbody>
-    </table>` : (state.studentsFilter ? `<p class="muted" style="font-size:13.5px;">No students with pending fees right now. 🎉</p>` : `<p class="muted" style="font-size:13.5px;">No students enrolled yet. Share your profile link so parents can find you.</p>`)}
+    </table>` : (hasActiveFilter ? `<p class="muted" style="font-size:13.5px;">No students match this filter.</p>` : `<p class="muted" style="font-size:13.5px;">No students enrolled yet. Share your profile link so parents can find you.</p>`)}
   </div>`;
 }
 
@@ -2703,8 +2758,19 @@ function teacherTabSkeleton(){
 // between so the swap always feels like something is happening, even
 // though the underlying data (loaded up front by ensureTeacherData) is
 // already in memory — except for Profile, which fetches fresh data.
-async function switchTeacherTab(tab){
-  if(state.teacherTab === tab && !state.selectedStudentProfileId) return;
+// preserveFilter=true skips clearing the Students tab's fee/batch filters —
+// used only by the "Pending payments" stat card and the "Show all"/"View
+// all students" shortcuts, which set the filter themselves right before
+// calling this. Every other way of reaching a tab (sidebar clicks, landing
+// here fresh) clears the filters, so a filter applied earlier never quietly
+// stays active after you've navigated elsewhere and come back.
+async function switchTeacherTab(tab, preserveFilter){
+  const filterWasActive = !preserveFilter && (state.studentsFilter || state.studentsBatchFilter);
+  if(!preserveFilter){ state.studentsFilter = null; state.studentsBatchFilter = null; }
+  if(state.teacherTab === tab && !state.selectedStudentProfileId){
+    if(filterWasActive) refreshTeacherPane();
+    return;
+  }
   state.teacherTab = tab;
   state.selectedBatchId = null;
   state.selectedStudentProfileId = null;
@@ -2872,7 +2938,7 @@ function adminEnrollmentsView(){
       </div>
     </div>
     ${sorted.length ? `<table class="data-table">
-      <thead><tr><th>Student</th><th>Teacher</th><th>Subject</th><th>Fee</th><th>Status</th><th>Enrolled</th></tr></thead>
+      <thead><tr><th>Student</th><th>Teacher</th><th>Subject</th><th>Fee</th><th>Status</th><th>Enrolled</th><th></th></tr></thead>
       <tbody>
         ${sorted.map(e=>`
         <tr>
@@ -2880,8 +2946,13 @@ function adminEnrollmentsView(){
           <td>${escapeHtml(e.teacherName)}</td>
           <td class="muted">${escapeHtml(e.subject)}</td>
           <td class="muted">₹${e.fee||0}</td>
-          <td><span class="badge ${e.status==='paid'?'badge-green':e.status==='due'?'badge-amber':'badge-red'}">${e.status.toUpperCase()}</span></td>
+          <td>
+            <select class="input" data-action="admin-set-fee-status" data-id="${e.id}" style="width:auto; padding:5px 8px; font-size:12px;">
+              ${['due','overdue','paid'].map(v=>`<option value="${v}" ${e.status===v?'selected':''}>${v.toUpperCase()}</option>`).join('')}
+            </select>
+          </td>
           <td class="muted">${new Date(e.created_at).toLocaleDateString()}</td>
+          <td><button class="btn btn-ghost btn-sm" data-action="remove-enrollment" data-id="${e.id}" data-name="${escapeHtml(e.studentName)}" data-subject="${escapeHtml(e.subject)}">🗑️ Remove</button></td>
         </tr>`).join('')}
       </tbody>
     </table>` : `<p class="muted" style="font-size:13.5px;">No enrollments match this filter.</p>`}
@@ -4193,6 +4264,38 @@ function batchModal(batchId){
   </div>`;
 }
 
+// Shown when a teacher clicks "Accept" on a pending enrollment request —
+// lets them optionally drop the student straight into one of their
+// batches as part of accepting, instead of accepting first and hunting
+// them down in the batch roster editor afterward. Batches matching the
+// request's subject are listed first; other-subject batches are grouped
+// separately since a teacher may occasionally want to add a student to a
+// mixed-subject batch anyway. Leaving it on "Don't add to a batch now"
+// still accepts the enrollment — batch assignment is optional, not a
+// blocker.
+function acceptEnrollmentModal(enrollmentId){
+  const r = myPendingEnrollmentRequests.find(x=>x.enrollmentId===enrollmentId);
+  if(!r) return '';
+  const matching = myBatches.filter(b=>b.subject===r.subject);
+  const other = myBatches.filter(b=>b.subject!==r.subject);
+  return `<div class="glass modal">
+    <h3 style="font-size:18px; margin-bottom:4px;">Accept enrollment — ${escapeHtml(r.name)}</h3>
+    <p class="muted" style="font-size:13px; margin-bottom:18px;">${escapeHtml(r.subject)}${r.schedule?' · '+escapeHtml(r.schedule):''} · ₹${r.fee}</p>
+    <div class="field"><label class="field-label">Add ${escapeHtml(r.name)} to a batch</label>
+      <select class="input" id="aeBatch">
+        <option value="">Don't add to a batch now</option>
+        ${matching.map(b=>`<option value="${b.id}">${escapeHtml(b.name)} (${escapeHtml(b.subject)})</option>`).join('')}
+        ${other.length ? `<optgroup label="Other subjects">${other.map(b=>`<option value="${b.id}">${escapeHtml(b.name)} (${escapeHtml(b.subject)})</option>`).join('')}</optgroup>` : ''}
+      </select>
+    </div>
+    ${!myBatches.length ? `<p class="muted" style="font-size:12px; margin-top:-8px;">You haven't created any batches yet — you can still accept now and add ${escapeHtml(r.name)} to a batch later from the Batches tab.</p>` : ''}
+    <div style="display:flex; gap:10px; margin-top:16px;">
+      <button class="btn btn-ghost btn-block" data-action="close-modal">Cancel</button>
+      <button class="btn btn-primary btn-block" data-action="submit-accept-enrollment" data-id="${enrollmentId}">✅ Accept</button>
+    </div>
+  </div>`;
+}
+
 function batchStudentsModal(batchId){
   const b = myBatches.find(x=>x.id===batchId);
   if(!b) return '';
@@ -4255,11 +4358,12 @@ function assessmentModal(batchId){
       <div class="field"><label class="field-label">Max marks</label><input class="input" id="asMaxMarks" type="number" min="1" value="100"/></div>
     </div>
     <div class="field"><label class="field-label">Subject</label><input class="input" id="asSubject" value="${escapeHtml(b.subject)}"/></div>
-    ${b.students.length ? `<div style="max-height:280px; overflow-y:auto; display:flex; flex-direction:column; gap:8px; margin-top:6px;">
+    ${b.students.length ? `<div style="max-height:320px; overflow-y:auto; display:flex; flex-direction:column; gap:8px; margin-top:6px;">
       ${b.students.map(s=>`
-      <div style="display:flex; align-items:center; gap:10px; padding:8px 12px; border-radius:10px; background:var(--divider-soft);">
-        <span style="flex:1; font-size:13.5px; font-weight:600;">${escapeHtml(s.name)}</span>
+      <div style="display:flex; align-items:center; gap:10px; padding:8px 12px; border-radius:10px; background:var(--divider-soft); flex-wrap:wrap;">
+        <span style="flex:1; min-width:100px; font-size:13.5px; font-weight:600;">${escapeHtml(s.name)}</span>
         <input class="input asMarkInput" data-student="${s.id}" data-name="${escapeHtml(s.name)}" type="number" min="0" placeholder="Marks" style="width:90px;"/>
+        <input class="input asRemarksInput" data-student="${s.id}" type="text" placeholder="Remarks (optional)" style="flex:1; min-width:140px;"/>
       </div>`).join('')}
     </div>` : `<p class="muted" style="font-size:13px;">This batch has no students yet.</p>`}
     <div style="display:flex; gap:10px; margin-top:16px;">
@@ -4522,7 +4626,10 @@ document.addEventListener('click', (e)=>{
   const action = el.dataset.action;
   switch(action){
     case 'go-home':
-      nav(state.portal==='customer' ? 'home' : 'teacherHome'); break;
+      if(state.session && state.profile?.role==='teacher') nav('teacherDashboard');
+      else if(state.session && state.profile?.role==='student') nav('home');
+      else nav(state.portal==='customer' ? 'home' : 'teacherHome');
+      break;
     case 'go':
       if(el.dataset.mode && el.dataset.view==='teacherAuth') state.teacherAuthMode = el.dataset.mode;
       if(el.dataset.mode && el.dataset.view==='studentAuth') state.studentAuthMode = el.dataset.mode;
@@ -4868,20 +4975,40 @@ document.addEventListener('click', (e)=>{
       }).finally(()=>setBtnLoading(el, false));
       break;
     }
-    case 'accept-enrollment': {
+    case 'open-accept-enrollment':
+      openModal(acceptEnrollmentModal(parseInt(el.dataset.id)));
+      break;
+    case 'submit-accept-enrollment': {
       const enrollmentId = parseInt(el.dataset.id);
       const req = myPendingEnrollmentRequests.find(r=>r.enrollmentId===enrollmentId);
+      const batchIdRaw = document.getElementById('aeBatch').value;
+      const batchId = batchIdRaw ? parseInt(batchIdRaw) : null;
+      const b = batchId ? myBatches.find(x=>x.id===batchId) : null;
       setBtnLoading(el, true);
-      sb.from('enrollments').update({ approval_status:'approved' }).eq('id', enrollmentId).then(({error})=>{
-        if(error){ toast('❌ ' + error.message, 'err'); return; }
-        toast('✅ Enrollment accepted', 'ok');
-        ensureTeacherData(true);
+      (async ()=>{
+        const { error } = await sb.from('enrollments').update({ approval_status:'approved' }).eq('id', enrollmentId);
+        if(error) throw error;
         if(req){
-          sb.from('notifications').insert({
+          const { error: nErr } = await sb.from('notifications').insert({
             student_id: req.studentId, teacher_id: state.session.user.id, type:'enrollment_approved',
             title: 'Enrollment confirmed', message: 'Your enrollment for ' + req.subject + ' has been accepted — you\'re all set.',
-          }).then(({error:nErr})=>{ if(nErr) console.error('Failed to notify student of enrollment acceptance', nErr); });
+          });
+          if(nErr) console.error('Failed to notify student of enrollment acceptance', nErr);
+          if(batchId){
+            const { error: bsErr } = await sb.from('batch_students').insert({ batch_id: batchId, student_id: req.studentId });
+            if(bsErr) throw bsErr;
+            const { error: bnErr } = await sb.from('notifications').insert({
+              student_id: req.studentId, teacher_id: state.session.user.id, batch_id: batchId, type:'batch_update',
+              title: 'Added to a batch', message: 'You\'ve been added to "' + (b?.name||'a batch') + '" (' + (b?.subject||'') + ').',
+            });
+            if(bnErr) console.error('Failed to notify student of batch addition', bnErr);
+          }
         }
+        closeModal();
+        toast(batchId ? '✅ Enrollment accepted and added to "' + (b?.name||'batch') + '"' : '✅ Enrollment accepted', 'ok');
+        ensureTeacherData(true);
+      })().catch(err=>{
+        toast('❌ ' + err.message, 'err');
       }).finally(()=>setBtnLoading(el, false));
       break;
     }
@@ -4899,6 +5026,33 @@ document.addEventListener('click', (e)=>{
             student_id: req.studentId, teacher_id: state.session.user.id, type:'general',
             title: 'Enrollment request declined', message: 'Your enrollment request for ' + req.subject + ' wasn\'t accepted this time — feel free to reach out or try again.',
           }).then(({error:nErr})=>{ if(nErr) console.error('Failed to notify student of enrollment decline', nErr); });
+        }
+      }).finally(()=>setBtnLoading(el, false));
+      break;
+    }
+    // Removes an *active* enrollment outright (as opposed to declining a
+    // still-pending request, above). Usable by the teacher on it, the
+    // student on it, or an admin, matching the delete policy on
+    // `enrollments`. Doesn't touch the person's batch membership or
+    // payment history rows directly — those keep existing independently
+    // (payments/attendance/assessment rows just lose their enrollment
+    // link) — but removes the fee-tracking record itself.
+    case 'remove-enrollment': {
+      const enrollmentId = parseInt(el.dataset.id);
+      const who = el.dataset.name ? (el.dataset.subject ? `${el.dataset.name} — ${el.dataset.subject}` : el.dataset.name) : (el.dataset.subject || 'this enrollment');
+      if(!confirm(`Remove ${who}? This can't be undone.`)) return;
+      setBtnLoading(el, true);
+      sb.from('enrollments').delete().eq('id', enrollmentId).then(({error})=>{
+        if(error){ toast('❌ ' + error.message, 'err'); return; }
+        toast('🗑️ Enrollment removed', 'ok');
+        if(state.profile?.role==='teacher'){
+          state.selectedStudentProfileId = null;
+          ensureTeacherData(true);
+        }else if(state.profile?.role==='student'){
+          studentDataStatus = 'idle';
+          ensureStudentData(true);
+        }else if(state.profile?.role==='admin'){
+          ensureAdminData(true);
         }
       }).finally(()=>setBtnLoading(el, false));
       break;
@@ -5121,7 +5275,11 @@ document.addEventListener('click', (e)=>{
       break;
     case 'open-student-profile':
       state.selectedStudentProfileId = el.dataset.id;
-      if(studentProfileDetail.id !== el.dataset.id) studentProfileDetail = { id: null, status: 'idle', profile: null, attendance: [], assessments: [] };
+      // Always drop the cache and refetch, even if this is the same
+      // student as last time — attendance/marks/fee status can have
+      // changed elsewhere (a batch assessment, a payment) since it was
+      // last loaded, and this view has no other way to pick that up live.
+      studentProfileDetail = { id: null, status: 'idle', profile: null, attendance: [], assessments: [] };
       refreshTeacherPane();
       break;
     case 'back-to-students':
@@ -5130,14 +5288,17 @@ document.addEventListener('click', (e)=>{
       break;
     case 'view-all-students':
       state.studentsFilter = null;
-      if(state.teacherTab==='students') refreshTeacherPane(); else switchTeacherTab('students');
+      state.studentsBatchFilter = null;
+      if(state.teacherTab==='students') refreshTeacherPane(); else switchTeacherTab('students', true);
       break;
     case 'view-pending-students':
       state.studentsFilter = 'pending';
-      if(state.teacherTab==='students') refreshTeacherPane(); else switchTeacherTab('students');
+      state.studentsBatchFilter = null;
+      if(state.teacherTab==='students') refreshTeacherPane(); else switchTeacherTab('students', true);
       break;
     case 'clear-students-filter':
       state.studentsFilter = null;
+      state.studentsBatchFilter = null;
       refreshTeacherPane();
       break;
     case 'notify-pending-fees': {
@@ -5245,8 +5406,13 @@ document.addEventListener('click', (e)=>{
       const maxMarksRaw = document.getElementById('asMaxMarks').value;
       const maxMarks = maxMarksRaw ? parseInt(maxMarksRaw) : 100;
       const subject = document.getElementById('asSubject').value.trim() || b.subject;
+      const remarksByStudent = {};
+      Array.from(document.querySelectorAll('.asRemarksInput')).forEach(inp=>{
+        const v = inp.value.trim();
+        if(v) remarksByStudent[inp.dataset.student] = v;
+      });
       const entries = Array.from(document.querySelectorAll('.asMarkInput'))
-        .map(inp=>({ studentId: inp.dataset.student, name: inp.dataset.name, marks: inp.value.trim() }))
+        .map(inp=>({ studentId: inp.dataset.student, name: inp.dataset.name, marks: inp.value.trim(), remarks: remarksByStudent[inp.dataset.student] || '' }))
         .filter(x=>x.marks !== '');
       if(!title){ toast('Please add an assessment title', 'warn'); return; }
       if(!entries.length){ toast('Enter at least one student\'s marks', 'warn'); return; }
@@ -5256,7 +5422,7 @@ document.addEventListener('click', (e)=>{
           .insert({ batch_id: batchId, teacher_id: state.session.user.id, subject, title, max_marks: maxMarks })
           .select().single();
         if(aErr) throw aErr;
-        const markRows = entries.map(e=>({ assessment_id: assessment.id, student_id: e.studentId, marks: parseFloat(e.marks) }));
+        const markRows = entries.map(e=>({ assessment_id: assessment.id, student_id: e.studentId, marks: parseFloat(e.marks), remarks: e.remarks }));
         const { error: mErr } = await sb.from('assessment_marks').insert(markRows);
         if(mErr) throw mErr;
         const notifRows = entries.map(e=>({
@@ -5434,6 +5600,34 @@ document.addEventListener('click', (e)=>{
       if(state.view==='teacherDashboard') reloads.push(ensureTeacherData(true));
       if(state.view==='adminDashboard') reloads.push(ensureAdminData(true));
       Promise.all(reloads).finally(()=>setBtnLoading(el, false));
+      break;
+    }
+  }
+});
+
+// Delegated change handler for filter dropdowns (<select data-action="...">).
+// Kept separate from the click delegation above since selects fire
+// 'change', not 'click'.
+document.addEventListener('change', (e)=>{
+  const el = e.target.closest('[data-action]');
+  if(!el) return;
+  switch(el.dataset.action){
+    case 'students-fee-filter':
+      state.studentsFilter = el.value === 'all' ? null : el.value;
+      refreshTeacherPane();
+      break;
+    case 'students-batch-filter':
+      state.studentsBatchFilter = el.value === 'all' ? null : el.value;
+      refreshTeacherPane();
+      break;
+    case 'admin-set-fee-status': {
+      const id = parseInt(el.dataset.id);
+      const status = el.value;
+      sb.from('enrollments').update({ status }).eq('id', id).then(({error})=>{
+        if(error){ toast('❌ ' + error.message, 'err'); return; }
+        toast('✅ Fee status updated', 'ok');
+        ensureAdminData(true);
+      });
       break;
     }
   }

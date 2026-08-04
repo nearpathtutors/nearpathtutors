@@ -390,6 +390,15 @@ create policy "students can send enquiries" on enquiries for insert with check (
 create policy "enrollment visible to student or teacher" on enrollments for select using (auth.uid() = student_id or auth.uid() = teacher_id);
 create policy "students can enroll themselves" on enrollments for insert with check (auth.uid() = student_id);
 create policy "student or teacher can update an enrollment" on enrollments for update using (auth.uid() = student_id or auth.uid() = teacher_id);
+-- Lets either side remove an enrollment outright (declining a pending
+-- request, or a teacher/student removing an active one later) — without
+-- this, deletes are silently rejected by RLS even though the app's UI
+-- offers the button.
+create policy "student or teacher can delete an enrollment" on enrollments for delete using (auth.uid() = student_id or auth.uid() = teacher_id);
+-- Lets the admin panel update fee status (and anything else) or remove an
+-- enrollment directly, on top of the admin's existing read-only access above.
+create policy "admins can update any enrollment" on enrollments for update using (is_admin());
+create policy "admins can delete any enrollment" on enrollments for delete using (is_admin());
 
 -- payments: only the paying student can see or create their own payment records.
 create policy "payments visible to the paying student" on payments for select using (auth.uid() = student_id);
