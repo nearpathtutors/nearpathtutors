@@ -545,6 +545,7 @@ let batchAttendanceForId = null;
 let batchAttendanceStatus = 'idle';
 let myTrialBookings = [];   // trial-class requests the logged-in student has made
 let myNotifications = [];   // notifications for the logged-in student (trial responses, batch announcements)
+let myMarks = [];   // this student's own assessment marks + teacher remarks, across every teacher
 let myTeacherNotifications = [];   // notifications for the logged-in teacher (new enrollment, new enquiry, fee received, admin broadcasts)
 
 // Teacher-side: full profile detail view for one student (grade, every
@@ -1179,8 +1180,70 @@ async function signInAdmin(username, password){
 }
 
 async function logout(){
+  clearImpersonationState(); // don't leave a stashed admin session behind for the next person on this browser
   await sb.auth.signOut();
   nav(state.portal==='customer' ? 'home' : 'teacherHome');
+}
+
+/* =========================================================
+   ADMIN — "SIGN IN AS" (impersonation)
+========================================================= */
+// While an admin is signed in as someone else, we keep the admin's own
+// tokens in sessionStorage (never localStorage — this should not survive
+// the tab closing) under this key, plus who/what they're currently
+// looking at, so "Return to admin" can restore the admin session and the
+// impersonation banner survives a page refresh.
+const IMPERSONATION_KEY = 'npt-impersonation';
+
+function getImpersonationState(){
+  try{ return JSON.parse(sessionStorage.getItem(IMPERSONATION_KEY) || 'null'); }catch(e){ return null; }
+}
+function clearImpersonationState(){
+  try{ sessionStorage.removeItem(IMPERSONATION_KEY); }catch(e){}
+}
+
+// Called from the admin panel's "🔑 Sign in as" button. Stashes the
+// admin's own session, swaps the browser's live session for the target
+// user's via a magic-link token from the admin-impersonate-user Edge
+// Function (see that file for the actual security check — this frontend
+// call proves nothing by itself), and lands on their dashboard.
+async function impersonateUser(id, name){
+  const { data:{ session: adminSession } } = await sb.auth.getSession();
+  if(!adminSession) return { error: 'Not signed in.' };
+  const { data, error } = await sb.functions.invoke('admin-impersonate-user', { body: { id } });
+  if(error) return { error: error.message };
+  if(data?.error) return { error: data.error };
+  authFlowInProgress = true;
+  const { error: verifyErr } = await sb.auth.verifyOtp({ email: data.email, token_hash: data.token_hash, type: 'magiclink' });
+  if(verifyErr){ authFlowInProgress = false; return { error: verifyErr.message }; }
+  await refreshProfile();
+  studentDataStatus = 'idle'; teacherDataStatus = 'idle'; adminDataStatus = 'idle';
+  resetChatWidget();
+  lastAuthUserId = id;
+  authFlowInProgress = false;
+  try{
+    sessionStorage.setItem(IMPERSONATION_KEY, JSON.stringify({
+      adminAccessToken: adminSession.access_token,
+      adminRefreshToken: adminSession.refresh_token,
+      targetName: data.name || name || 'this account',
+      targetRole: data.role,
+    }));
+  }catch(e){}
+  // A lightweight audit trail — visible to any admin in the Diagnostics
+  // tab, same table used for client-reported errors (see schema.sql).
+  sb.from('site_logs').insert({ level:'info', context:'Admin', message:`Admin signed in as ${data.name||name||'a user'} (${data.role})` }).then(()=>{});
+  return { ok: true, role: data.role };
+}
+
+// Called from the "🔙 Return to admin" banner. Restores the admin's own
+// session from what was stashed before impersonating.
+async function returnToAdmin(){
+  const imp = getImpersonationState();
+  if(!imp) return;
+  clearImpersonationState();
+  const { error } = await sb.auth.setSession({ access_token: imp.adminAccessToken, refresh_token: imp.adminRefreshToken });
+  if(error){ toast('❌ Your admin session expired — log back in.', 'err'); nav('adminAuth'); return; }
+  nav('adminDashboard');
 }
 
 // Step 1 of forgot-password: first check (via the email_exists() SQL
@@ -1278,14 +1341,18 @@ async function ensureStudentData(force){
   studentDataStatus = 'loading';
   try{
     const uid = state.session.user.id;
-    const [{data:enrollments, error:e1}, {data:payments, error:e2}, {data:reviews, error:e3}, {data:trials, error:e4}, {data:notifs, error:e5}] = await Promise.all([
+    const [{data:enrollments, error:e1}, {data:payments, error:e2}, {data:reviews, error:e3}, {data:trials, error:e4}, {data:notifs, error:e5}, {data:marks, error:e6}] = await Promise.all([
       sb.from('enrollments').select('*, teacher_profiles(profiles(full_name))').eq('student_id', uid).order('created_at',{ascending:false}),
       sb.from('payments').select('*').eq('student_id', uid).order('paid_at',{ascending:false}),
       sb.from('reviews').select('*').eq('student_id', uid),
       sb.from('trial_requests').select('*, batches(name,subject,grade,stream,days,time), teacher_profiles(profiles(full_name))').eq('student_id', uid).order('created_at',{ascending:false}),
       sb.from('notifications').select('*, teacher_profiles(profiles(full_name))').eq('student_id', uid).order('created_at',{ascending:false}),
+      // Remarks a teacher leaves alongside marks are visible to the
+      // student they're about (RLS already scopes this to just their own
+      // rows — see "marks visible to teacher or the student" in schema.sql).
+      sb.from('assessment_marks').select('*, assessments(title,subject,max_marks,created_at,batches(name))').eq('student_id', uid).order('created_at',{ascending:false}),
     ]);
-    if(e1) throw e1; if(e2) throw e2; if(e3) throw e3; if(e4) throw e4; if(e5) throw e5;
+    if(e1) throw e1; if(e2) throw e2; if(e3) throw e3; if(e4) throw e4; if(e5) throw e5; if(e6) throw e6;
     const enrollmentRows = enrollments.map(e=>({
       id:e.id, teacherId:e.teacher_id, teacherName: e.teacher_profiles?.profiles?.full_name || 'Teacher',
       subject:e.subject, schedule:e.schedule, fee:e.fee, status:e.status, dueDate:e.due_date || '—',
@@ -1307,6 +1374,10 @@ async function ensureStudentData(force){
     myNotifications = notifs.map(n=>({
       id:n.id, teacherName: n.teacher_profiles?.profiles?.full_name || 'Your teacher', type:n.type,
       title:n.title, message:n.message||'', readAt:n.read_at, createdAt:n.created_at,
+    }));
+    myMarks = marks.map(m=>({
+      title: m.assessments?.title||'Assessment', subject: m.assessments?.subject||'', maxMarks: m.assessments?.max_marks||100,
+      batchName: m.assessments?.batches?.name||'', marks: m.marks, remarks: m.remarks||'', createdAt: m.assessments?.created_at||m.created_at,
     }));
     studentDataStatus = 'ready';
   }catch(err){
@@ -1651,6 +1722,17 @@ function navbar(){
       <button class="btn btn-ghost btn-sm" data-action="toggle-maintenance">Turn off</button>
     </div>
   </div>` : '';
+  // Shown on every page, for both portals, whenever an admin is currently
+  // signed in as someone else — so it's never ambiguous whose account is
+  // live, and there's always a one-click way back.
+  const impersonation = getImpersonationState();
+  const impersonationBanner = impersonation ? `
+  <div class="wrap" style="padding-top:12px;">
+    <div class="glass" style="padding:10px 16px; display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; border:1px solid var(--primary); background:rgba(108,92,231,0.08);">
+      <span style="font-size:12.5px; font-weight:600; color:var(--primary);">🔑 You're signed in as ${impersonation.targetName} (as an admin).</span>
+      <button class="btn btn-primary btn-sm" data-action="return-to-admin">🔙 Return to admin</button>
+    </div>
+  </div>` : '';
   const navLinks = lockedRole==='teacher'
     ? `<button data-action="go" data-view="teacherDashboard">Dashboard</button>`
     : lockedRole==='student'
@@ -1667,6 +1749,7 @@ function navbar(){
     <div class="pill ${c==='customer'?'active':''}" data-action="switch-portal" data-portal="customer">👪 Parents</div>
     <div class="pill ${c==='teacher'?'active':''}" data-action="switch-portal" data-portal="teacher">🍎 Teachers</div>`;
   return `
+  ${impersonationBanner}
   ${maintenanceBanner}
   <div class="nav">
     <div class="wrap">
@@ -2042,12 +2125,13 @@ function viewStudentDashboard(){
     <div class="glass" style="padding:6px; display:inline-flex; gap:4px; margin-bottom:22px;">
       <div class="sidebar-link ${state.studentTab==='overview'?'active':''}" style="padding:9px 16px;" data-action="student-tab" data-tab="overview">📊 Overview</div>
       <div class="sidebar-link ${state.studentTab==='batches'?'active':''}" style="padding:9px 16px;" data-action="student-tab" data-tab="batches">📚 Batches</div>
+      <div class="sidebar-link ${state.studentTab==='marks'?'active':''}" style="padding:9px 16px;" data-action="student-tab" data-tab="marks">📝 Marks</div>
       <div class="sidebar-link ${state.studentTab==='notifications'?'active':''}" style="padding:9px 16px; display:flex; align-items:center; gap:6px;" data-action="student-tab" data-tab="notifications">
         🔔 Notifications ${unread ? `<span class="badge badge-blue" style="padding:2px 8px;">${unread}</span>` : ''}
       </div>
     </div>
 
-    <div id="studentTabPane">${state.studentTab==='notifications' ? studentNotificationsTab() : state.studentTab==='batches' ? studentBatchesTab() : studentOverviewTab()}</div>
+    <div id="studentTabPane">${state.studentTab==='notifications' ? studentNotificationsTab() : state.studentTab==='batches' ? studentBatchesTab() : state.studentTab==='marks' ? studentMarksTab() : studentOverviewTab()}</div>
   </div>`;
 }
 
@@ -2201,7 +2285,7 @@ function studentNotificationsTab(){
       <h3 style="font-size:16px; margin-bottom:16px;">Notifications</h3>
       ${myNotifications.length ? `<div style="display:flex; flex-direction:column; gap:10px;">
         ${myNotifications.map(n=>`
-        <div style="display:flex; gap:12px; padding:14px; border-radius:12px; background:${n.readAt?'var(--divider-soft)':'#6C5CE711'}; border:1px solid ${n.readAt?'transparent':'#6C5CE733'};">
+        <div style="display:flex; gap:12px; padding:14px; border-radius:12px; background:${n.readAt?'var(--divider-soft)':'#6C5CE711'}; border:1px solid ${n.readAt?'transparent':'#6C5CE733'}; cursor:pointer;" data-action="open-notif" data-id="${n.id}">
           <div style="font-size:20px;">${icons[n.type]||'🔔'}</div>
           <div style="flex:1;">
             <div style="display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap;">
@@ -2213,6 +2297,25 @@ function studentNotificationsTab(){
           </div>
         </div>`).join('')}
       </div>` : `<p class="muted" style="font-size:13.5px;">Nothing here yet — you'll see it when a teacher responds to a trial request or sends an update about a class.</p>`}
+    </div>`;
+}
+
+// Every assessment score this student has received, across every teacher
+// they're enrolled with — including any remarks the teacher left. RLS on
+// assessment_marks already scopes this to the student's own rows.
+function studentMarksTab(){
+  return `
+    <div class="glass" style="padding:24px;">
+      <h3 style="font-size:16px; margin-bottom:16px;">Marks</h3>
+      ${myMarks.length ? `<table class="data-table">
+        <thead><tr><th>Assessment</th><th>Subject</th><th>Score</th><th>Remarks</th></tr></thead>
+        <tbody>${myMarks.map(a=>`<tr>
+          <td style="font-weight:600;">${escapeHtml(a.title)}<div class="muted" style="font-size:11px;">${escapeHtml(a.batchName)} · ${new Date(a.createdAt).toLocaleDateString()}</div></td>
+          <td class="muted">${escapeHtml(a.subject)}</td>
+          <td style="font-family:var(--mono); font-weight:700;">${a.marks}/${a.maxMarks}</td>
+          <td class="muted">${escapeHtml(a.remarks)||'—'}</td>
+        </tr>`).join('')}</tbody>
+      </table>` : `<p class="muted" style="font-size:13.5px;">Nothing here yet — marks and remarks from your teachers will show up here once an assessment is recorded.</p>`}
     </div>`;
 }
 
@@ -2903,7 +3006,10 @@ function viewAdminDashboard(){
             <td class="muted">${(p.listing?.subjects||[]).join(', ') || '—'}</td>
             <td class="muted">${p.listing?.reviews ? `${p.listing.rating}★ (${p.listing.reviews})` : 'New'}</td>` : ''}
             <td class="muted">${new Date(p.created_at).toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'})}</td>
-            <td><button class="btn btn-ghost btn-sm" style="color:var(--red);" data-action="admin-delete-profile" data-id="${p.id}" data-name="${(p.full_name||'this user').replace(/"/g,'&quot;')}" data-role="${p.role}">🗑️ Remove</button></td>
+            <td style="display:flex; gap:6px; flex-wrap:wrap;">
+              <button class="btn btn-ghost btn-sm" data-action="admin-impersonate-user" data-id="${p.id}" data-name="${(p.full_name||'this user').replace(/"/g,'&quot;')}">🔑 Sign in as</button>
+              <button class="btn btn-ghost btn-sm" style="color:var(--red);" data-action="admin-delete-profile" data-id="${p.id}" data-name="${(p.full_name||'this user').replace(/"/g,'&quot;')}" data-role="${p.role}">🗑️ Remove</button>
+            </td>
           </tr>`).join('')}
         </tbody>
       </table>` : `<p class="muted" style="font-size:13.5px;">No ${state.adminTab} yet.</p>`}
@@ -3233,7 +3339,8 @@ function notifTargetTab(n, role){
     if(n.type==='trial_request') return 'trials';
     return 'overview';
   }
-  if(n.type==='batch_update' || n.type==='batch_cancelled' || n.type==='assessment') return 'batches';
+  if(n.type==='batch_update' || n.type==='batch_cancelled') return 'batches';
+  if(n.type==='assessment') return 'marks';
   if(n.type==='trial_approved' || n.type==='trial_declined' || n.type==='fee_reminder' || n.type==='enrollment_approved') return 'overview';
   return 'notifications';
 }
@@ -4358,12 +4465,16 @@ function assessmentModal(batchId){
       <div class="field"><label class="field-label">Max marks</label><input class="input" id="asMaxMarks" type="number" min="1" value="100"/></div>
     </div>
     <div class="field"><label class="field-label">Subject</label><input class="input" id="asSubject" value="${escapeHtml(b.subject)}"/></div>
-    ${b.students.length ? `<div style="max-height:320px; overflow-y:auto; display:flex; flex-direction:column; gap:8px; margin-top:6px;">
+    ${b.students.length ? `
+    <p class="muted" style="font-size:12px; margin:10px 0 6px; display:flex; align-items:flex-start; gap:6px;">
+      <span>ℹ️</span><span>Remarks are visible to the student they're about, in their own dashboard — write them the way you'd want a student to read them.</span>
+    </p>
+    <div style="max-height:320px; overflow-y:auto; display:flex; flex-direction:column; gap:8px; margin-top:6px;">
       ${b.students.map(s=>`
       <div style="display:flex; align-items:center; gap:10px; padding:8px 12px; border-radius:10px; background:var(--divider-soft); flex-wrap:wrap;">
         <span style="flex:1; min-width:100px; font-size:13.5px; font-weight:600;">${escapeHtml(s.name)}</span>
         <input class="input asMarkInput" data-student="${s.id}" data-name="${escapeHtml(s.name)}" type="number" min="0" placeholder="Marks" style="width:90px;"/>
-        <input class="input asRemarksInput" data-student="${s.id}" type="text" placeholder="Remarks (optional)" style="flex:1; min-width:140px;"/>
+        <input class="input asRemarksInput" data-student="${s.id}" type="text" placeholder="Remarks (visible to student)" style="flex:1; min-width:140px;"/>
       </div>`).join('')}
     </div>` : `<p class="muted" style="font-size:13px;">This batch has no students yet.</p>`}
     <div style="display:flex; gap:10px; margin-top:16px;">
@@ -4757,6 +4868,21 @@ document.addEventListener('click', (e)=>{
       }).finally(()=>setBtnLoading(el, false));
       break;
     }
+    case 'admin-impersonate-user': {
+      const name = el.dataset.name, id = el.dataset.id;
+      if(!confirm(`Sign in as "${name}"? You'll see the site exactly as they do. Use "Return to admin" (top of the page) to come back.`)) return;
+      setBtnLoading(el, true);
+      impersonateUser(id, name).then(({error, role})=>{
+        if(error){ toast('❌ ' + error, 'err'); return; }
+        toast('🔑 Signed in as ' + name, 'ok');
+        nav(role==='teacher' ? 'teacherDashboard' : 'studentDashboard');
+      }).finally(()=>setBtnLoading(el, false));
+      break;
+    }
+    case 'return-to-admin':
+      setBtnLoading(el, true);
+      returnToAdmin().finally(()=>setBtnLoading(el, false));
+      break;
     case 'admin-delete-profile': {
       const name = el.dataset.name, role = el.dataset.role, id = el.dataset.id;
       if(!confirm(`Delete ${role} "${name}"? This permanently removes their login and all related data (listings, enrollments, payments, reviews). This cannot be undone.`)) return;
