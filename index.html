@@ -1214,7 +1214,10 @@ async function impersonateUser(id, name){
   if(error) return { error: error.message };
   if(data?.error) return { error: data.error };
   authFlowInProgress = true;
-  const { error: verifyErr } = await sb.auth.verifyOtp({ email: data.email, token_hash: data.token_hash, type: 'magiclink' });
+  // verifyOtp with a token_hash takes only { token_hash, type } — passing
+  // email alongside it is rejected by Supabase (that combination is only
+  // valid for the 6-digit `token` flow, like the recovery flow below).
+  const { error: verifyErr } = await sb.auth.verifyOtp({ token_hash: data.token_hash, type: 'magiclink' });
   if(verifyErr){ authFlowInProgress = false; return { error: verifyErr.message }; }
   await refreshProfile();
   studentDataStatus = 'idle'; teacherDataStatus = 'idle'; adminDataStatus = 'idle';
