@@ -2108,7 +2108,6 @@ function viewTeacherProfile(){
 
         <div class="glass" style="padding:28px; margin-top:20px;">
           <h3 style="font-size:16px; margin-bottom:4px;">Weekly schedule</h3>
-          <p class="muted" style="font-size:12px; margin-bottom:16px;">Built automatically from ${escapeHtml(t.name)}'s active batches below.</p>
           ${t.schedule.length ? `<div style="overflow-x:auto;">
             <div style="display:grid; grid-template-columns:repeat(7,minmax(88px,1fr)); gap:8px; min-width:620px;">
               ${WEEKDAYS.map(day=>{
