@@ -1227,8 +1227,14 @@ function clearImpersonationState(){
 // Function (see that file for the actual security check — this frontend
 // call proves nothing by itself), and lands on their dashboard.
 async function impersonateUser(id, name){
-  const { data:{ session: adminSession } } = await sb.auth.getSession();
-  if(!adminSession) return { error: 'Not signed in.' };
+  // getSession() can hand back a cached session object even when it's
+  // actually expired (e.g. a background refresh already silently failed
+  // because the refresh token was used/rotated elsewhere, or has expired
+  // itself) — sending that stale access token to the Edge Function fails
+  // with a confusing 401 instead of a clear message. refreshSession()
+  // forces a real round-trip and tells us plainly if the session is dead.
+  const { data:{ session: adminSession }, error: refreshErr } = await sb.auth.refreshSession();
+  if(refreshErr || !adminSession) return { error: 'Your admin session has expired — please log out and log back in, then try again.' };
   const { data, error } = await sb.functions.invoke('admin-impersonate-user', { body: { id } });
   if(error) return { error: error.message };
   if(data?.error) return { error: data.error };
@@ -1407,7 +1413,13 @@ async function ensureStudentData(force){
     studentDataStatus = 'error';
     reportError('Student dashboard', err);
   }
-  render();
+  // Realtime updates (someone else's action — a teacher accepting an
+  // enrollment, marking a fee paid, etc.) call this in the background
+  // while the student may be mid-click on a row. A full render() would
+  // tear down and rebuild the whole page right under the cursor, which
+  // can make a click land on nothing. If the dashboard is already up,
+  // only refresh the active tab's content instead.
+  if(state.view==='studentDashboard' && document.getElementById('studentTabPane')) refreshStudentShell(); else render();
 }
 
 // Fetches every batch the logged-in student is a member of, plus their
@@ -1445,7 +1457,10 @@ async function ensureStudentBatches(force){
     console.error('Failed to load student batches', err);
     studentBatchesStatus = 'error';
   }
-  render();
+  // See the comment in ensureStudentData above — avoid a full-page
+  // render() from a background realtime refresh while the student may be
+  // mid-click on their Batches tab.
+  if(state.view==='studentDashboard' && document.getElementById('studentTabPane')) refreshStudentShell(); else render();
 }
 
 async function ensureTeacherData(force){
@@ -1504,7 +1519,13 @@ async function ensureTeacherData(force){
     teacherDataStatus = 'error';
     reportError('Teacher dashboard', err);
   }
-  render();
+  // See the comment in ensureStudentData above — this is what was making
+  // rows in Students/Batches occasionally miss a click: a realtime
+  // enrollment or batch change (someone else's action) refreshes this
+  // data in the background, and a full render() would rebuild the whole
+  // page — including the exact row under the cursor — right as a click
+  // landed on it.
+  if(state.view==='teacherDashboard' && document.getElementById('teacherTabPane')) refreshTeacherShell(); else render();
 }
 
 function todayStr(){ return new Date().toISOString().slice(0,10); }
@@ -1561,6 +1582,16 @@ function renderTeacherPane(){
 function refreshTeacherPane(){
   const pane = document.getElementById('teacherTabPane');
   if(pane && state.view==='teacherDashboard') pane.innerHTML = renderTeacherPane();
+}
+
+// Used after a background data reload (e.g. a realtime update from
+// someone else's action) — refreshes the sidebar's badge counts
+// (pending trial requests, enquiries) alongside the pane content, since
+// refreshTeacherPane() alone wouldn't pick those up.
+function refreshTeacherShell(){
+  const sidebarPane = document.getElementById('teacherSidebarPane');
+  if(sidebarPane && state.view==='teacherDashboard') sidebarPane.innerHTML = teacherSidebar();
+  refreshTeacherPane();
 }
 
 
@@ -1649,7 +1680,8 @@ async function ensureAdminData(force){
     adminDataStatus = 'error';
     reportError('Admin panel', err);
   }
-  render();
+  // See the comment in ensureStudentData above.
+  if(state.view==='adminDashboard' && document.getElementById('adminTabPane')) refreshAdminShell(); else render();
 }
 
 // Fetches the most recent client-reported errors for the admin panel's
@@ -2211,6 +2243,15 @@ function renderStudentPane(){
 function refreshStudentPane(){
   const pane = document.getElementById('studentTabPane');
   if(pane && state.view==='studentDashboard') pane.innerHTML = renderStudentPane();
+}
+
+// Used after a background data reload — refreshes the tab strip (the
+// unread-notifications badge) alongside the pane content, since
+// refreshStudentPane() alone wouldn't pick that up.
+function refreshStudentShell(){
+  const tabsBar = document.getElementById('studentTabsBar');
+  if(tabsBar && state.view==='studentDashboard') tabsBar.innerHTML = studentTabsBarHTML();
+  refreshStudentPane();
 }
 
 // Switches the student dashboard's active tab the same way
@@ -3201,6 +3242,15 @@ function renderAdminPane(){
 function refreshAdminPane(){
   const pane = document.getElementById('adminTabPane');
   if(pane && state.view==='adminDashboard') pane.innerHTML = renderAdminPane();
+}
+
+// Used after a background data reload — refreshes the pill strip (the
+// per-tab counts, e.g. "Enrollments (12)") alongside the pane content,
+// since refreshAdminPane() alone wouldn't pick that up.
+function refreshAdminShell(){
+  const tabsBar = document.getElementById('adminTabsBar');
+  if(tabsBar && state.view==='adminDashboard') tabsBar.innerHTML = adminTabsBarHTML();
+  refreshAdminPane();
 }
 
 // Switches the admin panel's active tab the same way switchTeacherTab
