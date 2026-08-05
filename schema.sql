@@ -284,6 +284,24 @@ create table site_logs (
   created_at timestamptz not null default now()
 );
 
+-- 16) auth_logs: an audit trail of every sign-up and sign-in, who it was,
+-- and how they authenticated (password or Google) — shown to admins in
+-- the admin panel's Access Logs tab. Written by the client right after
+-- each successful signUp()/signInWithPassword()/OAuth completion; anyone
+-- can insert a row for their own user_id (it needs to work the instant
+-- someone gets a session, before any other server-side check runs), but
+-- only an admin can read the log.
+create table auth_logs (
+  id bigserial primary key,
+  user_id uuid references profiles(id) on delete set null,
+  full_name text,
+  email text,
+  role text,
+  event text not null check (event in ('sign_up','sign_in')),
+  method text not null default 'password' check (method in ('password','google')),
+  created_at timestamptz not null default now()
+);
+
 -- ---------------------------------------------------------------
 -- Row Level Security: lock every table down, then open specific,
 -- narrow policies. Without this, the anon key can read/write anything.
@@ -306,6 +324,7 @@ alter table teacher_notifications enable row level security;
 alter table assessments enable row level security;
 alter table assessment_marks enable row level security;
 alter table site_logs enable row level security;
+alter table auth_logs enable row level security;
 
 -- profiles: names are shown publicly (e.g. "with Ritu Sharma"), but only
 -- the owner can create/change their own row.
@@ -357,6 +376,12 @@ create policy "admins can change site settings" on site_settings for all using (
 create policy "anyone can report an error" on site_logs for insert with check (true);
 create policy "admins can view logs" on site_logs for select using (is_admin());
 create policy "admins can clear logs" on site_logs for delete using (is_admin());
+
+-- auth_logs: a signed-in user can write a row for themselves (right after
+-- sign-up/sign-in); only an admin can read the log. Nobody can update or
+-- delete a row — it's an audit trail.
+create policy "users can log their own auth event" on auth_logs for insert with check (auth.uid() = user_id);
+create policy "admins can view auth logs" on auth_logs for select using (is_admin());
 
 -- ---------------------------------------------------------------
 -- Realtime: stream site_settings changes to every open tab, so someone

@@ -594,6 +594,19 @@ function reportError(context, err){
 }
 
 const WEEKDAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+// Half-hour time-of-day options (6:00 AM – 10:00 PM) used for the batch
+// "Time" picker, so a class time is a pair of proper values chosen from a
+// dropdown instead of free text someone could type any which way.
+const CLASS_TIME_OPTIONS = (()=>{
+  const out = [];
+  for(let mins = 6*60; mins <= 22*60; mins += 30){
+    let h = Math.floor(mins/60), m = mins%60;
+    const ampm = h>=12 ? 'PM' : 'AM';
+    let h12 = h%12; if(h12===0) h12 = 12;
+    out.push(`${h12}:${m.toString().padStart(2,'0')} ${ampm}`);
+  }
+  return out;
+})();
 const GRADE_OPTIONS = ['Nursery','LKG','UKG','Grade 1','Grade 2','Grade 3','Grade 4','Grade 5','Grade 6','Grade 7','Grade 8','Grade 9','Grade 10','Grade 11','Grade 12','Undergraduate','Other'];
 const STREAM_OPTIONS = ['Science (PCM)','Science (PCB)','Science (PCMB)','Commerce','Arts / Humanities','Other'];
 const STREAM_GRADES = new Set(['Grade 11','Grade 12']); // grades that show the stream dropdown
@@ -920,7 +933,7 @@ async function completeOAuthSignup(name){
       subjects:[], location:'', lat:null, lng:null, fee_start:0, fee_unit:'/month', experience:'', bio:'',
     };
     await sb.from('teacher_profiles').insert(freshTeacherProfile);
-    state.selectedTeacherProfile = { ...freshTeacherProfile, schedule_slots: [] };
+    state.selectedTeacherProfile = { ...freshTeacherProfile };
     teacherDataStatus = 'idle';
     toast('🎉 Teacher account created — let\'s fill in your profile.', 'ok');
     goPostAuth('teacherOnboarding');
@@ -935,7 +948,14 @@ async function completeOAuthSignup(name){
 // refreshProfile()/viewOAuthNamePrompt() can use it once Google redirects
 // back with a session.
 async function signInWithGoogle(role){
-  try{ localStorage.setItem('npt-oauth-role', role); }catch(e){}
+  try{
+    localStorage.setItem('npt-oauth-role', role);
+    // Marks "a real Google sign-in attempt is in flight" so the listener
+    // below can reliably log it once Google redirects back — see the
+    // comment on that listener for why it can't just rely on comparing
+    // user ids.
+    localStorage.setItem('npt-oauth-pending', '1');
+  }catch(e){}
   const { error } = await sb.auth.signInWithOAuth({
     provider: 'google',
     options: { redirectTo: location.origin + location.pathname },
@@ -971,15 +991,31 @@ async function boot(){
       studentDataStatus = 'idle'; teacherDataStatus = 'idle'; adminDataStatus = 'idle';
       resetChatWidget();
       lastAuthUserId = newUserId;
-      // Google sign-ins land here — signInStudent/signInTeacher only cover
-      // password auth, so a *returning* Google user's sign-in is logged
-      // right at this listener instead. A first-time Google user is still
-      // mid-signup at this point (awaitingOAuthName, set by refreshProfile()
-      // above) — completeOAuthSignup() logs that one itself once a name has
-      // been entered and its profile row exists, so we skip it here to
-      // avoid double-logging.
-      if(event === 'SIGNED_IN' && !authFlowInProgress && !awaitingOAuthName && session?.user?.app_metadata?.provider === 'google'){
-        logAuthEvent({ userId:session.user.id, fullName: state.profile?.full_name, email: session.user.email, role: state.profile?.role, event:'sign_in', method:'google' });
+    }
+    // Google sign-ins land here — signInStudent/signInTeacher only cover
+    // password auth, so a *returning* Google user's sign-in is logged
+    // right at this listener instead. This intentionally does NOT gate on
+    // `userChanged`: when Google redirects back to the page, boot()'s own
+    // sb.auth.getSession() call (below) can resolve the same new session
+    // and set lastAuthUserId just before this listener processes the
+    // matching SIGNED_IN event, which would make userChanged false here
+    // and silently skip the log. Instead we rely on the npt-oauth-pending
+    // flag set right before the redirect in signInWithGoogle() — it only
+    // exists when a real, user-initiated Google sign-in is in flight, and
+    // is removed the moment it's used so tab-focus/token-refresh events
+    // never re-trigger it. A first-time Google user is still mid-signup at
+    // this point (awaitingOAuthName, set by refreshProfile() above) —
+    // completeOAuthSignup() logs that one itself once a name has been
+    // entered and its profile row exists, so we skip it here to avoid
+    // double-logging, but still clear the flag so it doesn't linger.
+    if(event === 'SIGNED_IN' && !authFlowInProgress && session?.user?.app_metadata?.provider === 'google'){
+      let oauthPending = false;
+      try{ oauthPending = localStorage.getItem('npt-oauth-pending') === '1'; }catch(e){}
+      if(oauthPending){
+        try{ localStorage.removeItem('npt-oauth-pending'); }catch(e){}
+        if(!awaitingOAuthName){
+          logAuthEvent({ userId:session.user.id, fullName: state.profile?.full_name, email: session.user.email, role: state.profile?.role, event:'sign_in', method:'google' });
+        }
       }
     }
     if(authFlowInProgress) return;
@@ -1138,7 +1174,7 @@ async function signUpTeacher(name, email, password){
       teacherDataStatus = 'idle';
       // A brand-new teacher has no listing details yet — send them straight
       // into a one-time onboarding panel instead of the (still-empty) dashboard.
-      state.selectedTeacherProfile = { ...freshTeacherProfile, schedule_slots: [] };
+      state.selectedTeacherProfile = { ...freshTeacherProfile };
       toast('🎉 Teacher account created — let\'s fill in your profile.', 'ok');
       goPostAuth('teacherOnboarding');
     }else{
@@ -1331,9 +1367,18 @@ async function ensureTeachers(force){
   try{
     const { data, error } = await sb
       .from('teacher_profiles')
-      .select('*, profiles(full_name), schedule_slots(day,time,subj), batches(id,name,grade,stream,subject,days,time,description,capacity,status)');
+      .select('*, profiles(full_name), batches(id,name,grade,stream,subject,days,time,description,capacity,status)');
     if(error) throw error;
-    TEACHERS = data.map(t=>({
+    TEACHERS = data.map(t=>{
+      const activeBatches = (t.batches || []).filter(b=>b.status==='active');
+      // The weekly schedule shown on a teacher's public profile is now
+      // built straight from their active batches' days/time — one entry
+      // per day a batch runs — instead of a separately-typed-in list, so
+      // it's always exactly what the batches actually say.
+      const schedule = activeBatches.flatMap(b=>(b.days||[]).map(day=>({
+        day, time: b.time || 'Time TBC', subj: b.subject, batchName: b.name,
+      }))).sort((a,b)=> WEEKDAYS.indexOf(a.day) - WEEKDAYS.indexOf(b.day));
+      return {
       id: t.profile_id,
       name: t.profiles?.full_name || 'Unnamed teacher',
       initials: t.initials || '??',
@@ -1350,10 +1395,11 @@ async function ensureTeachers(force){
       feeUnit: t.fee_unit || '/month',
       experience: t.experience || '—',
       bio: t.bio || 'This teacher hasn\'t written a bio yet.',
-      schedule: t.schedule_slots || [],
-      batches: (t.batches || []).filter(b=>b.status==='active'),
+      schedule,
+      batches: activeBatches,
       reviewList: [],
-    }));
+      };
+    });
     teachersStatus = 'ready';
     resolvePendingTeacherSlug();
   }catch(err){
@@ -1433,7 +1479,7 @@ async function ensureStudentBatches(force){
   try{
     const uid = state.session.user.id;
     const { data: mine, error: e1 } = await sb.from('batch_students')
-      .select('batch_id, batches(id,name,subject,grade,stream,days,time,current_topic,next_class_date,teacher_id, teacher_profiles(profiles(full_name)))')
+      .select('batch_id, batches(id,name,subject,grade,stream,days,time,current_topic,teacher_id, teacher_profiles(profiles(full_name)))')
       .eq('student_id', uid);
     if(e1) throw e1;
     const batchIds = (mine||[]).filter(m=>m.batches).map(m=>m.batch_id);
@@ -1448,7 +1494,7 @@ async function ensureStudentBatches(force){
     }
     myStudentBatches = (mine||[]).filter(m=>m.batches).map(m=>({
       id:m.batches.id, name:m.batches.name, subject:m.batches.subject, grade:m.batches.grade||'', stream:m.batches.stream||'',
-      days:m.batches.days||[], time:m.batches.time||'', currentTopic:m.batches.current_topic||'', nextClassDate:m.batches.next_class_date||'',
+      days:m.batches.days||[], time:m.batches.time||'', currentTopic:m.batches.current_topic||'',
       teacherName: m.batches.teacher_profiles?.profiles?.full_name || 'Teacher',
       classmates: classmatesByBatch[m.batches.id] || [],
     }));
@@ -1501,7 +1547,7 @@ async function ensureTeacherData(force){
     myBatches = batches.map(b=>({
       id:b.id, name:b.name, grade:b.grade||'', stream:b.stream||'', subject:b.subject, days:b.days||[], time:b.time||'',
       description:b.description||'', capacity:b.capacity, status:b.status,
-      currentTopic: b.current_topic||'', nextClassDate: b.next_class_date||'',
+      currentTopic: b.current_topic||'',
       students: (b.batch_students||[]).map(bs=>({id:bs.student_id, name:bs.profiles?.full_name||'Student'})),
     }));
     myTrialRequests = trials.map(r=>({
@@ -2061,21 +2107,23 @@ function viewTeacherProfile(){
         </div>
 
         <div class="glass" style="padding:28px; margin-top:20px;">
-          <h3 style="font-size:16px; margin-bottom:16px;">Weekly schedule</h3>
-          ${t.schedule.length ? `<div style="display:flex; flex-direction:column; gap:10px;">
-            ${t.schedule.map(s=>`
-            <div class="ticket">
-              <div class="ticket-stub" style="background:${t.color}22; color:${t.color};">
-                <div class="t-day">${s.day.toUpperCase()}</div>
-                <div class="t-time">${s.time.split('–')[0]}</div>
-              </div>
-              <div class="ticket-perf"></div>
-              <div class="ticket-body">
-                <div style="font-weight:700; font-size:14.5px;">${s.subj}</div>
-                <div class="muted" style="font-size:12.5px; font-family:var(--mono); margin-top:3px;">${s.time}</div>
-              </div>
-            </div>`).join('')}
-          </div>` : `<p class="muted" style="font-size:13.5px;">This teacher hasn't published a schedule yet.</p>`}
+          <h3 style="font-size:16px; margin-bottom:4px;">Weekly schedule</h3>
+          <p class="muted" style="font-size:12px; margin-bottom:16px;">Built automatically from ${escapeHtml(t.name)}'s active batches below.</p>
+          ${t.schedule.length ? `<div style="overflow-x:auto;">
+            <div style="display:grid; grid-template-columns:repeat(7,minmax(88px,1fr)); gap:8px; min-width:620px;">
+              ${WEEKDAYS.map(day=>{
+                const daySlots = t.schedule.filter(s=>s.day===day);
+                return `<div style="border-radius:12px; background:var(--divider-soft); padding:10px 8px; min-height:76px; display:flex; flex-direction:column; gap:6px;">
+                  <div style="font-size:11px; font-weight:700; letter-spacing:0.03em; color:${daySlots.length?t.color:'inherit'};" class="${daySlots.length?'':'muted'}">${day.toUpperCase()}</div>
+                  ${daySlots.length ? daySlots.map(s=>`
+                    <div style="background:${t.color}18; border-radius:8px; padding:6px 8px;">
+                      <div style="font-size:11.5px; font-weight:700; line-height:1.25;">${escapeHtml(s.subj)}</div>
+                      <div class="muted" style="font-size:10px; font-family:var(--mono); margin-top:2px;">${escapeHtml(s.time)}</div>
+                    </div>`).join('') : `<div class="muted" style="font-size:11px;">—</div>`}
+                </div>`;
+              }).join('')}
+            </div>
+          </div>` : `<p class="muted" style="font-size:13.5px;">This teacher hasn't published a schedule yet — check back once they set up a batch.</p>`}
         </div>
 
         <div class="glass" style="padding:28px; margin-top:20px;">
@@ -2314,9 +2362,8 @@ function studentBatchesTab(){
             <div class="muted" style="font-size:12.5px; margin-top:4px;">${escapeHtml(b.subject)}${b.grade?' · '+escapeHtml(b.grade):''} · with ${escapeHtml(b.teacherName)} · ${(b.days||[]).join(', ')||'Days TBC'} · ${escapeHtml(b.time)||'Time TBC'}</div>
           </div>
         </div>
-        ${(b.currentTopic || b.nextClassDate) ? `<div style="display:flex; gap:16px; margin-top:10px; flex-wrap:wrap; font-size:12.5px;" class="muted">
-          ${b.currentTopic ? `<span>📖 Currently on: <strong style="color:var(--text);">${escapeHtml(b.currentTopic)}</strong></span>` : ''}
-          ${b.nextClassDate ? `<span>📅 Next class: <strong style="color:var(--text);">${new Date(b.nextClassDate+'T00:00:00').toLocaleDateString()}</strong></span>` : ''}
+        ${b.currentTopic ? `<div style="display:flex; gap:16px; margin-top:10px; flex-wrap:wrap; font-size:12.5px;" class="muted">
+          <span>📖 Currently on: <strong style="color:var(--text);">${escapeHtml(b.currentTopic)}</strong></span>
         </div>` : ''}
         <div style="margin-top:12px;">
           <div class="field-label" style="margin-bottom:6px;">Classmates (${b.classmates.length})</div>
@@ -2759,15 +2806,14 @@ function batchDetailView(batchId){
       </div>
     </div>
     ${b.description ? `<p class="muted" style="font-size:13px; margin-top:8px; line-height:1.5;">${escapeHtml(b.description)}</p>` : ''}
-    ${(b.currentTopic || b.nextClassDate) ? `<div style="display:flex; gap:16px; margin-top:10px; flex-wrap:wrap; font-size:12.5px;" class="muted">
-      ${b.currentTopic ? `<span>📖 Currently on: <strong style="color:var(--text);">${escapeHtml(b.currentTopic)}</strong></span>` : ''}
-      ${b.nextClassDate ? `<span>📅 Next class: <strong style="color:var(--text);">${new Date(b.nextClassDate+'T00:00:00').toLocaleDateString()}</strong></span>` : ''}
+    ${b.currentTopic ? `<div style="display:flex; gap:16px; margin-top:10px; flex-wrap:wrap; font-size:12.5px;" class="muted">
+      <span>📖 Currently on: <strong style="color:var(--text);">${escapeHtml(b.currentTopic)}</strong></span>
     </div>` : ''}
 
     <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin:18px 0;" class="grid-2">
       <div class="glass stat-card" style="padding:16px;"><div class="eyebrow">Students</div><div class="stat-num" style="font-size:22px;">${b.students.length}${b.capacity?'/'+b.capacity:''}</div></div>
       <div class="glass stat-card" style="padding:16px;"><div class="eyebrow">Fee due</div><div class="stat-num" style="font-size:22px; color:${feeDue>0?'var(--red)':'var(--green)'}">${feeDue}</div></div>
-      <div class="glass stat-card" style="padding:16px;"><div class="eyebrow">Marked today</div><div class="stat-num" style="font-size:22px;">${(batchAttendance[batchId]||[]).filter(a=>a.date===todayStr()).length}/${b.students.length}</div></div>
+      <div class="glass stat-card" style="padding:16px;"><div class="eyebrow">Marked today</div><div class="stat-num" id="attMarkedToday-${batchId}" style="font-size:22px;">${(batchAttendance[batchId]||[]).filter(a=>a.date===todayStr()).length}/${b.students.length}</div></div>
     </div>
 
     <h4 style="font-size:14px; margin-bottom:10px;">Students</h4>
@@ -2952,11 +2998,7 @@ function teacherProfileEdit(){
     <div class="field"><label class="field-label">Experience</label><input class="input" id="peExperience" value="${t.experience||''}" placeholder="8 yrs"/></div>
     <div class="field"><label class="field-label">Monthly fee (₹)</label><input class="input" id="peFee" type="number" value="${t.fee_start||0}"/></div>
     <div class="field"><label class="field-label">Bio</label><textarea class="input" id="peBio" rows="3" placeholder="Tell parents about your teaching style...">${t.bio||''}</textarea></div>
-    <div class="field">
-      <label class="field-label">Weekly schedule — one slot per line, as <code>Day | Time | Subject</code></label>
-      <textarea class="input" id="peSchedule" rows="3" placeholder="Mon | 4:00–5:00 PM | Mathematics
-Wed | 4:00–5:00 PM | Mathematics">${(t.schedule_slots||[]).map(s=>`${s.day} | ${s.time} | ${s.subj}`).join('\n')}</textarea>
-    </div>
+    <p class="muted" style="font-size:12.5px; margin:-4px 0 4px;">Your weekly schedule is no longer set here — it's built automatically from your batches' days and times. Create or edit a batch from your dashboard to update it.</p>
     <button class="btn btn-primary" data-action="save-profile">Save changes</button>
   </div>`;
 }
@@ -2991,11 +3033,7 @@ function teacherOnboardingFields(){
     <div class="field"><label class="field-label">Experience</label><input class="input" id="peExperience" value="${t.experience||''}" placeholder="8 yrs"/></div>
     <div class="field"><label class="field-label">Monthly fee (₹)</label><input class="input" id="peFee" type="number" value="${t.fee_start||0}"/></div>
     <div class="field"><label class="field-label">Bio</label><textarea class="input" id="peBio" rows="3" placeholder="Tell parents about your teaching style...">${t.bio||''}</textarea></div>
-    <div class="field">
-      <label class="field-label">Weekly schedule — one slot per line, as <code>Day | Time | Subject</code></label>
-      <textarea class="input" id="peSchedule" rows="3" placeholder="Mon | 4:00–5:00 PM | Mathematics
-Wed | 4:00–5:00 PM | Mathematics">${(t.schedule_slots||[]).map(s=>`${s.day} | ${s.time} | ${s.subj}`).join('\n')}</textarea>
-    </div>`;
+    <p class="muted" style="font-size:12.5px; margin:-4px 0 4px;">You'll set your weekly schedule per-batch once you create your first batch from the dashboard — it's built automatically from each batch's days and time.</p>`;
 }
 
 function viewTeacherOnboarding(){
@@ -3084,7 +3122,7 @@ async function switchTeacherTab(tab, preserveFilter){
   pane.innerHTML = teacherTabSkeleton();
   try{
     if(tab==='profile'){
-      const { data, error } = await sb.from('teacher_profiles').select('*, schedule_slots(day,time,subj)').eq('profile_id', state.session.user.id).single();
+      const { data, error } = await sb.from('teacher_profiles').select('*').eq('profile_id', state.session.user.id).single();
       if(error) throw error;
       state.selectedTeacherProfile = data;
     }else{
@@ -3934,6 +3972,14 @@ function subscribeSessionRealtime(){
           state.studentTab = 'notifications';
           nav('studentDashboard');
         });
+        // The bell/notifications list is patched above, but that alone
+        // doesn't refresh the actual data a notification is about — a
+        // new assessment notification arriving didn't used to update the
+        // Marks tab, so a student had to manually reload to see the new
+        // marks even though the bell already showed it. Refetch whichever
+        // underlying data this notification type affects.
+        if(n.type==='assessment' && studentDataStatus==='ready') ensureStudentData(true);
+        if((n.type==='batch_update' || n.type==='batch_cancelled') && studentBatchesStatus==='ready') ensureStudentBatches(true);
         // Always re-render (not just on the dashboard) so the navbar
         // bell's unread badge updates the instant this arrives, no
         // matter what page the student is currently looking at.
@@ -4016,6 +4062,14 @@ function subscribeSessionRealtime(){
     .on('postgres_changes', { event:'DELETE', schema:'public', table:'batch_students', filter:`student_id=eq.${uid}` }, (payload)=>{
       if(role!=='student') return;
       if(studentBatchesStatus==='ready') ensureStudentBatches(true);
+    })
+    .on('postgres_changes', { event:'UPDATE', schema:'public', table:'batches' }, (payload)=>{
+      // Only relevant for students — a teacher edited a batch's days/time/
+      // topic. `batches` has no student_id column to filter server-side
+      // on, so this fires for every batch update site-wide; only act on
+      // it when it's one of the student's own batches.
+      if(role!=='student') return;
+      if(studentBatchesStatus==='ready' && myStudentBatches.some(b=>b.id===payload.new.id)) ensureStudentBatches(true);
     })
     .subscribe();
 }
@@ -4624,9 +4678,28 @@ function chatBubbleInnerHTML(){
   return `💬${unread ? `<span class="chat-bubble-badge">${unread>9?'9+':unread}</span>` : ''}`;
 }
 
+// Splits a batch's stored "time" string (e.g. "4:00 PM – 5:00 PM") back
+// into its start/end pieces so the edit form can pre-select them in the
+// dropdowns below. Falls back to blank (placeholder) if it doesn't match
+// one of our own dropdown-built values, e.g. old free-text data from
+// before this was a dropdown.
+function splitClassTime(time){
+  if(!time) return { start:'', end:'' };
+  const parts = time.split('–').map(s=>s.trim());
+  if(parts.length!==2) return { start:'', end:'' };
+  const [start,end] = parts;
+  return {
+    start: CLASS_TIME_OPTIONS.includes(start) ? start : '',
+    end: CLASS_TIME_OPTIONS.includes(end) ? end : '',
+  };
+}
+
 function batchModal(batchId){
   const b = batchId ? myBatches.find(x=>x.id===batchId) : null;
   const selectedDays = b ? (b.days||[]) : [];
+  const { start:selStart, end:selEnd } = splitClassTime(b?b.time:'');
+  const timeOpts = (selected)=> `<option value="" ${!selected?'selected':''} disabled>Select…</option>` +
+    CLASS_TIME_OPTIONS.map(t=>`<option value="${t}" ${t===selected?'selected':''}>${t}</option>`).join('');
   return `<div class="glass modal">
     <h3 style="font-size:18px; margin-bottom:18px;">${b ? 'Edit batch' : 'New batch'}</h3>
     <div class="field"><label class="field-label">Batch name</label><input class="input" id="bmName" value="${b?b.name:''}" placeholder="Weekday Algebra — Grade 8"/></div>
@@ -4644,15 +4717,16 @@ function batchModal(batchId){
         " style="cursor:pointer; padding:7px 12px; border-radius:10px; border:1px solid var(--glass-border); font-size:12.5px; font-weight:600; ${selectedDays.includes(d)?'background:var(--primary); color:#fff; border-color:var(--primary);':''}">${d}</span>`).join('')}
       </div>
     </div>
-    <div class="grid-2" style="gap:12px;">
-      <div class="field"><label class="field-label">Time</label><input class="input" id="bmTime" value="${b?b.time:''}" placeholder="4:00–5:00 PM"/></div>
-      <div class="field"><label class="field-label">Capacity (optional)</label><input class="input" id="bmCapacity" type="number" min="1" value="${b&&b.capacity!=null?b.capacity:''}" placeholder="Unlimited"/></div>
+    <div class="field">
+      <label class="field-label">Time</label>
+      <div class="grid-2" style="gap:12px;">
+        <select class="input" id="bmTimeStart">${timeOpts(selStart)}</select>
+        <select class="input" id="bmTimeEnd">${timeOpts(selEnd)}</select>
+      </div>
     </div>
+    <div class="field"><label class="field-label">Capacity (optional)</label><input class="input" id="bmCapacity" type="number" min="1" value="${b&&b.capacity!=null?b.capacity:''}" placeholder="Unlimited"/></div>
     <div class="field"><label class="field-label">Description</label><textarea class="input" id="bmDescription" rows="3" placeholder="What this batch covers, pace, expectations...">${b?escapeHtml(b.description):''}</textarea></div>
-    <div class="grid-2" style="gap:12px;">
-      <div class="field"><label class="field-label">Current chapter/topic (optional)</label><input class="input" id="bmCurrentTopic" value="${b?escapeHtml(b.currentTopic||''):''}" placeholder="e.g. Quadratic Equations"/></div>
-      <div class="field"><label class="field-label">Next class date (optional)</label><input class="input" id="bmNextClassDate" type="date" value="${b&&b.nextClassDate?b.nextClassDate:''}"/></div>
-    </div>
+    <div class="field"><label class="field-label">Current chapter/topic (optional)</label><input class="input" id="bmCurrentTopic" value="${b?escapeHtml(b.currentTopic||''):''}" placeholder="e.g. Quadratic Equations"/></div>
     <div class="field"><label class="field-label">Status</label>
       <select class="input" id="bmStatus">
         <option value="active" ${!b||b.status==='active'?'selected':''}>Active — visible to students</option>
@@ -5620,15 +5694,17 @@ document.addEventListener('click', (e)=>{
       const subject = document.getElementById('bmSubject').value.trim();
       const daysVal = document.getElementById('bmDays').value;
       const days = daysVal ? daysVal.split(',') : [];
-      const time = document.getElementById('bmTime').value.trim();
+      const timeStart = document.getElementById('bmTimeStart').value;
+      const timeEnd = document.getElementById('bmTimeEnd').value;
+      const time = (timeStart && timeEnd) ? `${timeStart} – ${timeEnd}` : '';
       const capacityRaw = document.getElementById('bmCapacity').value;
       const capacity = capacityRaw ? parseInt(capacityRaw) : null;
       const description = document.getElementById('bmDescription').value.trim();
       const currentTopic = document.getElementById('bmCurrentTopic').value.trim();
-      const nextClassDateRaw = document.getElementById('bmNextClassDate').value;
       const status = document.getElementById('bmStatus').value;
       if(!name || !subject){ toast('Please fill in at least a name and subject', 'warn'); return; }
-      const payload = { teacher_id: uid, name, grade, stream, subject, days, time, capacity, description, status, current_topic: currentTopic, next_class_date: nextClassDateRaw || null };
+      if(!timeStart || !timeEnd){ toast('Please pick a start and end time', 'warn'); return; }
+      const payload = { teacher_id: uid, name, grade, stream, subject, days, time, capacity, description, status, current_topic: currentTopic };
       setBtnLoading(el, true);
       (idRaw
         ? sb.from('batches').update(payload).eq('id', parseInt(idRaw))
@@ -5762,6 +5838,15 @@ document.addEventListener('click', (e)=>{
         if(countsEl){
           const c = attendanceCounts(batchId, studentId);
           countsEl.textContent = `Present ${c.present} · Absent ${c.absent} · Late ${c.late}`;
+        }
+        // Was only ever set once at render time — without patching it here
+        // too, "Marked today" stays stuck at its original count until the
+        // whole batch detail view happens to re-render some other way.
+        const markedTodayEl = document.getElementById(`attMarkedToday-${batchId}`);
+        if(markedTodayEl){
+          const b = myBatches.find(x=>x.id===batchId);
+          const markedToday = (batchAttendance[batchId]||[]).filter(a=>a.date===date).length;
+          markedTodayEl.textContent = `${markedToday}/${b?b.students.length:0}`;
         }
       });
       break;
@@ -6070,7 +6155,7 @@ document.addEventListener('change', (e)=>{
 });
 
 async function loadOwnTeacherProfile(){
-  const { data, error } = await sb.from('teacher_profiles').select('*, schedule_slots(day,time,subj)').eq('profile_id', state.session.user.id).single();
+  const { data, error } = await sb.from('teacher_profiles').select('*').eq('profile_id', state.session.user.id).single();
   if(error){ toast('❌ ' + error.message, 'err'); return; }
   state.selectedTeacherProfile = data;
   render();
@@ -6091,14 +6176,6 @@ async function saveTeacherProfile(){
   };
   const { error } = await sb.from('teacher_profiles').update(payload).eq('profile_id', uid);
   if(error){ toast('❌ ' + error.message, 'err'); return; }
-
-  const scheduleLines = document.getElementById('peSchedule').value.split('\n').map(l=>l.trim()).filter(Boolean);
-  const slots = scheduleLines.map(l=>{
-    const [day,time,subj] = l.split('|').map(s=>s.trim());
-    return { teacher_id: uid, day, time, subj };
-  }).filter(s=>s.day && s.time && s.subj);
-  await sb.from('schedule_slots').delete().eq('teacher_id', uid);
-  if(slots.length) await sb.from('schedule_slots').insert(slots);
 
   toast('✅ Profile updated', 'ok');
   ensureTeachers(true);
@@ -6124,14 +6201,6 @@ async function saveTeacherProfileOnboarding(){
   };
   const { error } = await sb.from('teacher_profiles').update(payload).eq('profile_id', uid);
   if(error){ toast('❌ ' + error.message, 'err'); return; }
-
-  const scheduleLines = document.getElementById('peSchedule').value.split('\n').map(l=>l.trim()).filter(Boolean);
-  const slots = scheduleLines.map(l=>{
-    const [day,time,subj] = l.split('|').map(s=>s.trim());
-    return { teacher_id: uid, day, time, subj };
-  }).filter(s=>s.day && s.time && s.subj);
-  await sb.from('schedule_slots').delete().eq('teacher_id', uid);
-  if(slots.length) await sb.from('schedule_slots').insert(slots);
 
   toast('🎉 Profile saved — welcome to your dashboard!', 'ok');
   ensureTeachers(true);
