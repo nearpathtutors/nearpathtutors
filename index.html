@@ -2998,7 +2998,6 @@ function teacherProfileEdit(){
     <div class="field"><label class="field-label">Experience</label><input class="input" id="peExperience" value="${t.experience||''}" placeholder="8 yrs"/></div>
     <div class="field"><label class="field-label">Monthly fee (₹)</label><input class="input" id="peFee" type="number" value="${t.fee_start||0}"/></div>
     <div class="field"><label class="field-label">Bio</label><textarea class="input" id="peBio" rows="3" placeholder="Tell parents about your teaching style...">${t.bio||''}</textarea></div>
-    <p class="muted" style="font-size:12.5px; margin:-4px 0 4px;">Your weekly schedule is no longer set here — it's built automatically from your batches' days and times. Create or edit a batch from your dashboard to update it.</p>
     <button class="btn btn-primary" data-action="save-profile">Save changes</button>
   </div>`;
 }
