@@ -881,11 +881,17 @@ let awaitingOAuthName = false;
 // notion of "student vs teacher".
 let oauthPendingRole = 'student';
 
+// Returns the profile row it just fetched (or null), in addition to
+// setting state.profile — callers that need the value *at this exact
+// moment* (like the Google sign-in listener below) should use the
+// return value instead of re-reading state.profile afterward, since
+// state.profile is shared, mutable, and can be overwritten by another
+// concurrent onAuthStateChange invocation before this one finishes.
 async function refreshProfile(){
-  if(!state.session){ state.profile = null; awaitingOAuthName = false; return; }
+  if(!state.session){ state.profile = null; awaitingOAuthName = false; return null; }
   const { data, error } = await sb.from('profiles').select('*').eq('id', state.session.user.id).single();
-  if(!error){ state.profile = data; awaitingOAuthName = false; return; }
-  if(error.code !== 'PGRST116'){ console.error(error); state.profile = null; awaitingOAuthName = false; return; }
+  if(!error){ state.profile = data; awaitingOAuthName = false; return data; }
+  if(error.code !== 'PGRST116'){ console.error(error); state.profile = null; awaitingOAuthName = false; return null; }
   // PGRST116 = no matching row. Email/password sign-up always creates its
   // own profiles row right after auth.signUp() (see signUpStudent/
   // signUpTeacher below), so reaching here means a Google sign-in that
@@ -894,6 +900,7 @@ async function refreshProfile(){
   state.profile = null;
   awaitingOAuthName = true;
   try{ oauthPendingRole = localStorage.getItem('npt-oauth-role') || 'student'; }catch(e){ oauthPendingRole = 'student'; }
+  return null;
 }
 
 // Screen shown after a first-time Google sign-in, before any profile row
@@ -986,8 +993,16 @@ async function boot(){
     // that's already loaded gets reset to "loading" and never refetches.
     const newUserId = session?.user?.id || null;
     const userChanged = newUserId !== lastAuthUserId;
+    // Captures whatever refreshProfile() fetched *in this specific
+    // invocation* — used below instead of state.profile, which another
+    // concurrent SIGNED_IN/TOKEN_REFRESHED invocation could overwrite
+    // (or briefly null out) between this await and the Google-logging
+    // check further down, which is what was making the admin panel's
+    // Access Logs show "Unknown" for a Google sign-in even though the
+    // profile row existed all along.
+    let freshProfile = null;
     if(userChanged){
-      await refreshProfile();
+      freshProfile = await refreshProfile();
       studentDataStatus = 'idle'; teacherDataStatus = 'idle'; adminDataStatus = 'idle';
       resetChatWidget();
       lastAuthUserId = newUserId;
@@ -1014,7 +1029,12 @@ async function boot(){
       if(oauthPending){
         try{ localStorage.removeItem('npt-oauth-pending'); }catch(e){}
         if(!awaitingOAuthName){
-          logAuthEvent({ userId:session.user.id, fullName: state.profile?.full_name, email: session.user.email, role: state.profile?.role, event:'sign_in', method:'google' });
+          // Prefer the profile this exact invocation just fetched; only
+          // fall back to the shared state.profile if this invocation
+          // didn't fetch one itself (userChanged was false, meaning
+          // another invocation already refreshed it).
+          const p = freshProfile || state.profile;
+          logAuthEvent({ userId:session.user.id, fullName: p?.full_name, email: session.user.email, role: p?.role, event:'sign_in', method:'google' });
         }
       }
     }
@@ -4696,8 +4716,6 @@ function batchModal(batchId){
   const b = batchId ? myBatches.find(x=>x.id===batchId) : null;
   const selectedDays = b ? (b.days||[]) : [];
   const { start:selStart, end:selEnd } = splitClassTime(b?b.time:'');
-  const timeOpts = (selected)=> `<option value="" ${!selected?'selected':''} disabled>Select…</option>` +
-    CLASS_TIME_OPTIONS.map(t=>`<option value="${t}" ${t===selected?'selected':''}>${t}</option>`).join('');
   return `<div class="glass modal">
     <h3 style="font-size:18px; margin-bottom:18px;">${b ? 'Edit batch' : 'New batch'}</h3>
     <div class="field"><label class="field-label">Batch name</label><input class="input" id="bmName" value="${b?b.name:''}" placeholder="Weekday Algebra — Grade 8"/></div>
@@ -4717,9 +4735,11 @@ function batchModal(batchId){
     </div>
     <div class="field">
       <label class="field-label">Time</label>
-      <div class="grid-2" style="gap:12px;">
-        <select class="input" id="bmTimeStart">${timeOpts(selStart)}</select>
-        <select class="input" id="bmTimeEnd">${timeOpts(selEnd)}</select>
+      <datalist id="bmTimeOptions">${CLASS_TIME_OPTIONS.map(t=>`<option value="${t}">`).join('')}</datalist>
+      <div style="display:grid; grid-template-columns:1fr auto 1fr; gap:10px; align-items:center;">
+        <input class="input" id="bmTimeStart" list="bmTimeOptions" autocomplete="off" placeholder="9:00 AM" value="${selStart}"/>
+        <span class="muted" style="font-size:13px; font-weight:600;">to</span>
+        <input class="input" id="bmTimeEnd" list="bmTimeOptions" autocomplete="off" placeholder="10:00 AM" value="${selEnd}"/>
       </div>
     </div>
     <div class="field"><label class="field-label">Capacity (optional)</label><input class="input" id="bmCapacity" type="number" min="1" value="${b&&b.capacity!=null?b.capacity:''}" placeholder="Unlimited"/></div>
@@ -5692,8 +5712,8 @@ document.addEventListener('click', (e)=>{
       const subject = document.getElementById('bmSubject').value.trim();
       const daysVal = document.getElementById('bmDays').value;
       const days = daysVal ? daysVal.split(',') : [];
-      const timeStart = document.getElementById('bmTimeStart').value;
-      const timeEnd = document.getElementById('bmTimeEnd').value;
+      const timeStart = document.getElementById('bmTimeStart').value.trim();
+      const timeEnd = document.getElementById('bmTimeEnd').value.trim();
       const time = (timeStart && timeEnd) ? `${timeStart} – ${timeEnd}` : '';
       const capacityRaw = document.getElementById('bmCapacity').value;
       const capacity = capacityRaw ? parseInt(capacityRaw) : null;
@@ -5702,6 +5722,9 @@ document.addEventListener('click', (e)=>{
       const status = document.getElementById('bmStatus').value;
       if(!name || !subject){ toast('Please fill in at least a name and subject', 'warn'); return; }
       if(!timeStart || !timeEnd){ toast('Please pick a start and end time', 'warn'); return; }
+      if(!CLASS_TIME_OPTIONS.includes(timeStart) || !CLASS_TIME_OPTIONS.includes(timeEnd)){
+        toast('Please pick a valid time from the list (half-hour steps, e.g. 9:00 AM)', 'warn'); return;
+      }
       const payload = { teacher_id: uid, name, grade, stream, subject, days, time, capacity, description, status, current_topic: currentTopic };
       setBtnLoading(el, true);
       (idRaw
