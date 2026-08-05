@@ -607,6 +607,17 @@ begin
   ) then
     alter publication supabase_realtime add table batch_students;
   end if;
+  -- batches: so a student's "My batches" tab picks up a day/time change
+  -- the teacher makes instantly. The client already listens for this —
+  -- without the table being in this publication, that one listener fails
+  -- to bind, which was taking the whole shared realtime channel down with
+  -- it (messages, notifications, everything) instead of just this feature.
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'batches'
+  ) then
+    alter publication supabase_realtime add table batches;
+  end if;
 end $$;
 
 -- ---------------------------------------------------------------

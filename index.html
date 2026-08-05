@@ -4089,7 +4089,18 @@ function subscribeSessionRealtime(){
       if(role!=='student') return;
       if(studentBatchesStatus==='ready' && myStudentBatches.some(b=>b.id===payload.new.id)) ensureStudentBatches(true);
     })
-    .subscribe();
+    .subscribe((status, err)=>{
+      // A binding this channel depends on (e.g. a table missing from the
+      // supabase_realtime publication — see the README) can make the
+      // whole shared channel fail instead of just that one listener,
+      // silently taking chat/notifications/every other live update down
+      // with it. Surface that instead of failing invisibly, and let a
+      // fresh subscribeSessionRealtime() try again.
+      if(status === 'CHANNEL_ERROR' || status === 'TIMED_OUT'){
+        console.error('Realtime channel failed to subscribe', status, err);
+        if(chatRealtimeChannel){ sb.removeChannel(chatRealtimeChannel); chatRealtimeChannel = null; }
+      }
+    });
 }
 
 function teardownSessionRealtime(){
@@ -6329,6 +6340,27 @@ document.addEventListener('keydown', (e)=>{
     ).finally(()=>setBtnLoading(btn, false));
   }
 });
+
+// Browsers block audio from starting on its own — an AudioContext created
+// or resumed from a realtime event (no click behind it, since the event
+// arrived over the network at an arbitrary moment) is silently ignored by
+// autoplay policy, which is why playPingSound()/playNotifSound() never
+// actually made a sound. Unlocking it once on the visitor's first tap/
+// click/keypress anywhere on the page — a real user gesture — lets it
+// stay usable for every notification sound after that, for the rest of
+// the session.
+function unlockAudioOnce(){
+  try{
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if(audioCtx.state === 'suspended') audioCtx.resume();
+  }catch(err){ /* audio unavailable — fine to skip */ }
+  document.removeEventListener('click', unlockAudioOnce);
+  document.removeEventListener('keydown', unlockAudioOnce);
+  document.removeEventListener('touchstart', unlockAudioOnce);
+}
+document.addEventListener('click', unlockAudioOnce);
+document.addEventListener('keydown', unlockAudioOnce);
+document.addEventListener('touchstart', unlockAudioOnce);
 
 boot();
 </script>
