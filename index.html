@@ -399,6 +399,7 @@ const state = {
   selectedStudentProfileId: null,  // when set, the teacher dashboard shows that student's full profile instead of the active tab
   studentsFilter: null,      // null | 'pending' — filters the teacher's Students tab to only fee-pending students
   studentsBatchFilter: null, // null | batch id (string) — filters the teacher's Students tab to one batch's roster
+  studentsSearch: '',        // free-text search (name or subject) on the teacher's Students tab
   notifDrawerOpen: false,    // whether the top-bar notification bell's dropdown is open
   studentAuthMode: 'login',   // 'login' | 'signup'
   teacherAuthMode: 'login',
@@ -570,6 +571,8 @@ let lastDataError = null;
 // Logs shown on the admin panel's Diagnostics tab.
 let siteLogs = [];
 let siteLogsStatus = 'idle';
+let authLogs = [];        // rows from auth_logs — who signed in/registered, when, and how (see the admin panel's Access Logs tab)
+let authLogsStatus = 'idle';
 
 // Records a dashboard-load failure both locally (for the error screen the
 // person is looking at right now) and in the database (so an admin can
@@ -909,6 +912,7 @@ async function completeOAuthSignup(name){
   try{ localStorage.removeItem('npt-oauth-role'); }catch(e){}
   awaitingOAuthName = false;
   state.profile = data;
+  logAuthEvent({ userId:user.id, fullName:name, email:user.email, role, event:'sign_up', method:'google' });
   if(role === 'teacher'){
     const freshTeacherProfile = {
       profile_id:user.id, initials: name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase(),
@@ -967,6 +971,16 @@ async function boot(){
       studentDataStatus = 'idle'; teacherDataStatus = 'idle'; adminDataStatus = 'idle';
       resetChatWidget();
       lastAuthUserId = newUserId;
+      // Google sign-ins land here — signInStudent/signInTeacher only cover
+      // password auth, so a *returning* Google user's sign-in is logged
+      // right at this listener instead. A first-time Google user is still
+      // mid-signup at this point (awaitingOAuthName, set by refreshProfile()
+      // above) — completeOAuthSignup() logs that one itself once a name has
+      // been entered and its profile row exists, so we skip it here to
+      // avoid double-logging.
+      if(event === 'SIGNED_IN' && !authFlowInProgress && !awaitingOAuthName && session?.user?.app_metadata?.provider === 'google'){
+        logAuthEvent({ userId:session.user.id, fullName: state.profile?.full_name, email: session.user.email, role: state.profile?.role, event:'sign_in', method:'google' });
+      }
     }
     if(authFlowInProgress) return;
     // A TOKEN_REFRESHED event fires on basically every tab focus, with the
@@ -1062,6 +1076,7 @@ async function signUpStudent(name, email, password){
     if(error) return toast('❌ ' + error.message, 'err');
     if(data.user){
       await sb.from('profiles').insert({ id:data.user.id, role:'student', full_name:name });
+      logAuthEvent({ userId:data.user.id, fullName:name, email, role:'student', event:'sign_up', method:'password' });
     }
     if(data.session){
       state.session = data.session;
@@ -1090,6 +1105,7 @@ async function signInStudent(email, password){
     lastAuthUserId = data.session?.user?.id || null;
     await refreshProfile();
     studentDataStatus = 'idle';
+    logAuthEvent({ userId:data.session?.user?.id, fullName: state.profile?.full_name || null, email, role:'student', event:'sign_in', method:'password' });
     toast('👋 Logged in successfully', 'ok');
     goPostAuth('studentDashboard');
   }finally{
@@ -1113,6 +1129,7 @@ async function signUpTeacher(name, email, password){
         subjects:[], location:'', lat:null, lng:null, fee_start:0, fee_unit:'/month', experience:'', bio:'',
       };
       await sb.from('teacher_profiles').insert(freshTeacherProfile);
+      logAuthEvent({ userId:data.user.id, fullName:name, email, role:'teacher', event:'sign_up', method:'password' });
     }
     if(data.session){
       state.session = data.session;
@@ -1144,6 +1161,7 @@ async function signInTeacher(email, password){
     lastAuthUserId = data.session?.user?.id || null;
     await refreshProfile();
     teacherDataStatus = 'idle';
+    logAuthEvent({ userId:data.session?.user?.id, fullName: state.profile?.full_name || null, email, role:'teacher', event:'sign_in', method:'password' });
     toast('👋 Welcome back', 'ok');
     goPostAuth('teacherDashboard');
   }finally{
@@ -1172,6 +1190,7 @@ async function signInAdmin(username, password){
       return;
     }
     adminDataStatus = 'idle';
+    logAuthEvent({ userId:data.session?.user?.id, fullName: state.profile?.full_name || null, email: ADMIN_EMAIL, role:'admin', event:'sign_in', method:'password' });
     toast('🔓 Admin access granted', 'ok');
     nav('adminDashboard');
   }finally{
@@ -1653,7 +1672,39 @@ async function ensureSiteLogs(force){
 }
 
 function refreshAdminDiagnosticsPane(){
-  if(state.view==='adminDashboard' && state.adminTab==='diagnostics') render();
+  refreshAdminPane();
+}
+
+// Fetches the most recent sign-up/sign-in events for the admin panel's
+// Access Logs tab (see the auth_logs table — every successful signup or
+// login, by anyone, writes a row there via logAuthEvent()).
+async function ensureAuthLogs(force){
+  if(authLogsStatus==='ready' && !force) return;
+  authLogsStatus = 'loading';
+  refreshAdminPane();
+  try{
+    const { data, error } = await sb.from('auth_logs').select('*').order('created_at',{ascending:false}).limit(200);
+    if(error) throw error;
+    authLogs = data || [];
+    authLogsStatus = 'ready';
+  }catch(err){
+    console.error('Failed to load auth logs', err);
+    authLogsStatus = 'error';
+  }
+  refreshAdminPane();
+}
+
+// Writes one row to auth_logs right after a successful sign-up or sign-in
+// — called with the details of whoever just authenticated (not read from
+// `state`, since a couple of call sites run before state.session/profile
+// are fully settled). Fire-and-forget: a failure here shouldn't block the
+// person from using the app, just logs to the console.
+function logAuthEvent({ userId, fullName, email, role, event, method }){
+  if(!userId) return;
+  sb.from('auth_logs').insert({
+    user_id: userId, full_name: fullName || null, email: email || null,
+    role: role || null, event, method: method || 'password',
+  }).then(({error})=>{ if(error) console.error('Failed to log auth event', error); });
 }
 
 
@@ -1765,7 +1816,6 @@ function navbar(){
           ${portalSwitcher}
           ${loggedIn && (role==='student' || role==='teacher') ? `<button id="notifBellBtn" class="btn btn-ghost btn-sm notif-bell" data-action="toggle-notif-drawer" title="Notifications" aria-label="Notifications">${notifBellInnerHTML()}</button>` : ''}
           <button class="btn btn-ghost btn-sm" data-action="toggle-theme" title="Switch to ${currentTheme()==='dark'?'light':'dark'} theme" aria-label="Toggle theme">${currentTheme()==='dark' ? '☀️' : '🌙'}</button>
-          ${lockedRole ? '' : `<button class="btn btn-ghost btn-sm" data-action="go-admin" title="Admin panel" aria-label="Admin panel">🛡️</button>`}
           ${loggedIn
             ? `<button class="btn btn-ghost btn-sm" data-action="logout">🚪 Log out</button>`
             : `<button class="btn btn-primary btn-sm" data-action="go" data-view="${c==='customer'?'studentAuth':'teacherAuth'}" data-mode="login">Log in</button>`}
@@ -2125,17 +2175,77 @@ function viewStudentDashboard(){
       </div>
     </div>
 
-    <div class="glass" style="padding:6px; display:inline-flex; gap:4px; margin-bottom:22px;">
+    <div class="glass" id="studentTabsBar" style="padding:6px; display:inline-flex; gap:4px; margin-bottom:22px;">${studentTabsBarHTML()}</div>
+
+    <div id="studentTabPane" class="pane-fade">${renderStudentPane()}</div>
+  </div>`;
+}
+
+// The student dashboard's tab strip, factored out so switchStudentTab can
+// refresh just the active-tab highlight (via #studentTabsBar) without
+// touching the pane content or anything else on the page.
+function studentTabsBarHTML(){
+  const unread = myNotifications.filter(n=>!n.readAt).length;
+  return `
       <div class="sidebar-link ${state.studentTab==='overview'?'active':''}" style="padding:9px 16px;" data-action="student-tab" data-tab="overview">📊 Overview</div>
       <div class="sidebar-link ${state.studentTab==='batches'?'active':''}" style="padding:9px 16px;" data-action="student-tab" data-tab="batches">📚 Batches</div>
       <div class="sidebar-link ${state.studentTab==='marks'?'active':''}" style="padding:9px 16px;" data-action="student-tab" data-tab="marks">📝 Marks</div>
       <div class="sidebar-link ${state.studentTab==='notifications'?'active':''}" style="padding:9px 16px; display:flex; align-items:center; gap:6px;" data-action="student-tab" data-tab="notifications">
         🔔 Notifications ${unread ? `<span class="badge badge-blue" style="padding:2px 8px;">${unread}</span>` : ''}
-      </div>
-    </div>
+      </div>`;
+}
 
-    <div id="studentTabPane">${state.studentTab==='notifications' ? studentNotificationsTab() : state.studentTab==='batches' ? studentBatchesTab() : state.studentTab==='marks' ? studentMarksTab() : studentOverviewTab()}</div>
-  </div>`;
+// Picks which tab's content to show — centralized so viewStudentDashboard,
+// refreshStudentPane, and switchStudentTab all stay in sync (same pattern
+// as renderTeacherPane).
+function renderStudentPane(){
+  return state.studentTab==='notifications' ? studentNotificationsTab()
+    : state.studentTab==='batches' ? studentBatchesTab()
+    : state.studentTab==='marks' ? studentMarksTab()
+    : studentOverviewTab();
+}
+
+// Refreshes just the student dashboard's active tab pane in place — mirrors
+// refreshTeacherPane, used after actions that change data behind the
+// currently-open tab without needing a full-page repaint.
+function refreshStudentPane(){
+  const pane = document.getElementById('studentTabPane');
+  if(pane && state.view==='studentDashboard') pane.innerHTML = renderStudentPane();
+}
+
+// Switches the student dashboard's active tab the same way
+// switchTeacherTab does: only #studentTabsBar (active-tab highlight) and
+// #studentTabPane (content) are touched, with a brief skeleton in between,
+// so clicking between tabs never looks like the whole dashboard reloaded.
+async function switchStudentTab(tab){
+  if(state.studentTab === tab) return;
+  state.studentTab = tab;
+  if(tab==='notifications'){
+    const unreadIds = myNotifications.filter(n=>!n.readAt).map(n=>n.id);
+    if(unreadIds.length){
+      const now = new Date().toISOString();
+      myNotifications.forEach(n=>{ if(!n.readAt) n.readAt = now; });
+      sb.from('notifications').update({ read_at: now }).in('id', unreadIds).then(({error})=>{
+        if(error) console.error('Failed to mark notifications read', error);
+      });
+    }
+  }
+  const tabsBar = document.getElementById('studentTabsBar');
+  const pane = document.getElementById('studentTabPane');
+  if(!pane){ render(); return; }
+  if(tabsBar) tabsBar.innerHTML = studentTabsBarHTML();
+  pane.classList.remove('pane-fade');
+  pane.innerHTML = teacherTabSkeleton();
+  // A short, deliberate pause so the skeleton is perceptible even though
+  // this tab's data is already cached in memory (same reasoning as
+  // switchTeacherTab).
+  await new Promise(res=>setTimeout(res, 200));
+  if(state.studentTab !== tab) return; // switched again while this was loading
+  const freshPane = document.getElementById('studentTabPane');
+  if(!freshPane) return;
+  freshPane.innerHTML = renderStudentPane();
+  freshPane.classList.add('pane-fade');
+  updateNotifBellBadge();
 }
 
 function studentBatchesTab(){
@@ -2254,18 +2364,21 @@ function studentOverviewTab(){
           <h3 style="font-size:16px; margin-bottom:16px;">Fee status</h3>
           ${myEnrollments.length ? `<div style="display:flex; flex-direction:column; gap:12px;">
             ${myEnrollments.map(e=>`
-            <div style="display:flex; justify-content:space-between; align-items:center; padding:12px; border-radius:12px; background:var(--divider-soft);">
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:12px; border-radius:12px; background:var(--divider-soft); gap:10px; flex-wrap:wrap;">
               <div>
                 <div style="font-weight:600; font-size:13.5px;">${e.subject}</div>
                 <div class="muted" style="font-size:12px;">${e.teacherName}</div>
               </div>
-              <div style="text-align:right;">
-                <div style="font-family:var(--mono); font-weight:700; font-size:14px;">₹${e.fee}</div>
-                <span class="badge ${e.status==='paid'?'badge-green':e.status==='due'?'badge-amber':'badge-red'}">${e.status.toUpperCase()}</span>
+              <div style="display:flex; align-items:center; gap:10px;">
+                <div style="text-align:right;">
+                  <div style="font-family:var(--mono); font-weight:700; font-size:14px;">₹${e.fee}</div>
+                  <span class="badge ${e.status==='paid'?'badge-green':e.status==='due'?'badge-amber':'badge-red'}">${e.status.toUpperCase()}</span>
+                </div>
+                ${e.status!=='paid' ? `<button class="btn btn-primary btn-sm" data-action="open-pay" data-id="${e.id}">💳 Pay</button>` : ''}
               </div>
             </div>`).join('')}
           </div>` : `<p class="muted" style="font-size:13px;">Nothing to show yet.</p>`}
-          ${totalDue>0 ? `<button class="btn btn-primary btn-block" style="margin-top:16px;" data-action="open-pay">💳 Mark ₹${totalDue} as paid</button>` : ''}
+          ${totalDue>0 ? `<button class="btn btn-ghost btn-block" style="margin-top:16px;" data-action="open-pay">Pay all ₹${totalDue} at once</button>` : ''}
         </div>
 
         <div class="glass" style="padding:24px;">
@@ -2417,26 +2530,88 @@ function teacherOverview(){
   </div>`;
 }
 
+// Which batch(es) each student belongs to, for this teacher — used for
+// the Batch column and the batch filter dropdown. A student can be in
+// more than one batch (e.g. different subjects), so this is a list.
+function batchesByStudentMap(){
+  const map = {};
+  myBatches.forEach(b=>{
+    b.students.forEach(st=>{
+      (map[st.id] = map[st.id] || []).push(b);
+    });
+  });
+  return map;
+}
+
+// Applies the Students tab's fee/batch filters plus the search box to
+// myStudents — shared by teacherStudents() (first paint) and
+// renderTeacherStudentsTable() (live re-filter on every keystroke).
+function filteredMyStudents(){
+  const feeFilter = state.studentsFilter;          // null | 'pending'
+  const batchFilter = state.studentsBatchFilter;    // null | batch id (string)
+  const search = (state.studentsSearch||'').trim().toLowerCase();
+  const batchesByStudent = batchesByStudentMap();
+  let filtered = myStudents;
+  if(feeFilter==='pending') filtered = filtered.filter(s=>s.feeStatus!=='paid');
+  if(batchFilter) filtered = filtered.filter(s=>(batchesByStudent[s.studentId]||[]).some(b=>String(b.id)===String(batchFilter)));
+  if(search) filtered = filtered.filter(s=>s.name.toLowerCase().includes(search) || s.subject.toLowerCase().includes(search));
+  return filtered;
+}
+
+// Builds just the table (or empty-state message) for the Students tab —
+// factored out so renderTeacherStudentsTable() can swap only this part
+// back in after a search keystroke or a fee-status change, without
+// touching the search box itself (which would lose focus/cursor position
+// on every keystroke if the whole card were replaced).
+function teacherStudentsTableHTML(){
+  const filtered = filteredMyStudents();
+  const hasActiveFilter = !!(state.studentsFilter || state.studentsBatchFilter || (state.studentsSearch||'').trim());
+  const batchesByStudent = batchesByStudentMap();
+  if(!filtered.length){
+    return hasActiveFilter ? `<p class="muted" style="font-size:13.5px;">No students match this filter.</p>` : `<p class="muted" style="font-size:13.5px;">No students enrolled yet. Share your profile link so parents can find you.</p>`;
+  }
+  return `<table class="data-table">
+      <thead><tr><th>Name</th><th>Grade</th><th>Subject</th><th>Batch</th><th>Fee status</th><th>Fee</th><th>Enrolled</th><th></th></tr></thead>
+      <tbody>
+        ${filtered.map(s=>{
+          const batchNames = (batchesByStudent[s.studentId]||[]).map(b=>b.name).join(', ');
+          return `
+        <tr style="cursor:pointer;" data-action="open-student-profile" data-id="${s.studentId}">
+          <td style="font-weight:600;">${escapeHtml(s.name)}</td>
+          <td class="muted">${s.grade}</td>
+          <td class="muted">${s.subject}</td>
+          <td class="muted">${batchNames ? escapeHtml(batchNames) : '—'}</td>
+          <td>
+            <select class="input" data-action="teacher-set-fee-status" data-enrollment="${s.enrollmentId}" title="Update payment" style="width:auto; padding:4px 8px; font-size:11.5px; font-weight:700; color:${s.feeStatus==='paid'?'var(--green)':s.feeStatus==='due'?'var(--amber)':'var(--red)'};">
+              ${['due','paid','overdue'].map(st=>`<option value="${st}" ${s.feeStatus===st?'selected':''}>${st.toUpperCase()}</option>`).join('')}
+            </select>
+          </td>
+          <td class="muted">₹${s.fee}</td>
+          <td class="muted">${s.enrolledAt ? new Date(s.enrolledAt).toLocaleDateString() : '—'}</td>
+          <td style="white-space:nowrap;">
+            <button class="btn btn-ghost btn-sm" data-action="open-chat" data-teacher="${state.session.user.id}" data-student="${s.studentId}" data-name="${escapeHtml(s.name)}">💬 Chat</button>
+            ${s.feeStatus!=='paid' ? `<button class="btn btn-ghost btn-sm" data-action="notify-fee" data-id="${s.enrollmentId}">🔔 Notify fee</button>` : ''}
+            <button class="btn btn-ghost btn-sm" data-action="remove-enrollment" data-id="${s.enrollmentId}" data-name="${escapeHtml(s.name)}" data-subject="${escapeHtml(s.subject)}">🗑️ Remove</button>
+          </td>
+        </tr>`;}).join('')}
+      </tbody>
+    </table>`;
+}
+
+// Re-filters and swaps in just the table body after a search keystroke or
+// a fee-status change — same technique as renderList() for the browse
+// page's search box, so the search input itself is never replaced and
+// never loses focus/cursor position while typing.
+function renderTeacherStudentsTable(){
+  const wrap = document.getElementById('teacherStudentsTableWrap');
+  if(wrap) wrap.innerHTML = teacherStudentsTableHTML();
+}
+
 function teacherStudents(){
   const pendingCount = myStudents.filter(s=>s.feeStatus!=='paid').length;
   const feeFilter = state.studentsFilter;          // null | 'pending'
   const batchFilter = state.studentsBatchFilter;    // null | batch id (string)
-
-  // Which batch(es) each student belongs to, for this teacher — used for
-  // the Batch column and the batch filter dropdown. A student can be in
-  // more than one batch (e.g. different subjects), so this is a list.
-  const batchesByStudent = {};
-  myBatches.forEach(b=>{
-    b.students.forEach(st=>{
-      (batchesByStudent[st.id] = batchesByStudent[st.id] || []).push(b);
-    });
-  });
-
-  let filtered = myStudents;
-  if(feeFilter==='pending') filtered = filtered.filter(s=>s.feeStatus!=='paid');
-  if(batchFilter) filtered = filtered.filter(s=>(batchesByStudent[s.studentId]||[]).some(b=>String(b.id)===String(batchFilter)));
-
-  const hasActiveFilter = !!(feeFilter || batchFilter);
+  const hasActiveFilter = !!(feeFilter || batchFilter || (state.studentsSearch||'').trim());
 
   return `
   ${myPendingEnrollmentRequests.length ? `<div class="glass" style="padding:22px; margin-bottom:16px; border:1px solid var(--amber, #F5A623);">
@@ -2459,6 +2634,7 @@ function teacherStudents(){
     <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:16px;">
       <h3 style="font-size:15.5px;">My students ${feeFilter==='pending' ? `<span class="badge badge-amber" style="margin-left:6px;">Pending fees only</span>` : ''}</h3>
       <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        <input class="input" placeholder="🔍 Search by name or subject…" id="teacherStudentsSearch" value="${escapeHtml(state.studentsSearch||'')}" oninput="state.studentsSearch=this.value; renderTeacherStudentsTable();" style="width:200px; padding:8px 10px; font-size:12.5px;" />
         <select class="input" data-action="students-fee-filter" style="width:auto; padding:8px 10px; font-size:12.5px;">
           <option value="all" ${!feeFilter?'selected':''}>All fee statuses</option>
           <option value="pending" ${feeFilter==='pending'?'selected':''}>Fee pending</option>
@@ -2471,28 +2647,7 @@ function teacherStudents(){
         ${pendingCount ? `<button class="btn btn-primary btn-sm" data-action="notify-pending-fees">🔔 Notify pending fees (${pendingCount})</button>` : ''}
       </div>
     </div>
-    ${filtered.length ? `<table class="data-table">
-      <thead><tr><th>Name</th><th>Grade</th><th>Subject</th><th>Batch</th><th>Fee status</th><th>Fee</th><th>Enrolled</th><th></th></tr></thead>
-      <tbody>
-        ${filtered.map(s=>{
-          const batchNames = (batchesByStudent[s.studentId]||[]).map(b=>b.name).join(', ');
-          return `
-        <tr style="cursor:pointer;" data-action="open-student-profile" data-id="${s.studentId}">
-          <td style="font-weight:600;">${escapeHtml(s.name)}</td>
-          <td class="muted">${s.grade}</td>
-          <td class="muted">${s.subject}</td>
-          <td class="muted">${batchNames ? escapeHtml(batchNames) : '—'}</td>
-          <td><span class="badge ${s.feeStatus==='paid'?'badge-green':s.feeStatus==='due'?'badge-amber':'badge-red'}">${s.feeStatus.toUpperCase()}</span></td>
-          <td class="muted">₹${s.fee}</td>
-          <td class="muted">${s.enrolledAt ? new Date(s.enrolledAt).toLocaleDateString() : '—'}</td>
-          <td style="white-space:nowrap;">
-            <button class="btn btn-ghost btn-sm" data-action="open-chat" data-teacher="${state.session.user.id}" data-student="${s.studentId}" data-name="${escapeHtml(s.name)}">💬 Chat</button>
-            ${s.feeStatus!=='paid' ? `<button class="btn btn-ghost btn-sm" data-action="notify-fee" data-id="${s.enrollmentId}">🔔 Notify fee</button>` : ''}
-            <button class="btn btn-ghost btn-sm" data-action="remove-enrollment" data-id="${s.enrollmentId}" data-name="${escapeHtml(s.name)}" data-subject="${escapeHtml(s.subject)}">🗑️ Remove</button>
-          </td>
-        </tr>`;}).join('')}
-      </tbody>
-    </table>` : (hasActiveFilter ? `<p class="muted" style="font-size:13.5px;">No students match this filter.</p>` : `<p class="muted" style="font-size:13.5px;">No students enrolled yet. Share your profile link so parents can find you.</p>`)}
+    <div id="teacherStudentsTableWrap">${teacherStudentsTableHTML()}</div>
   </div>`;
 }
 
@@ -2871,8 +3026,8 @@ function teacherTabSkeleton(){
 // here fresh) clears the filters, so a filter applied earlier never quietly
 // stays active after you've navigated elsewhere and come back.
 async function switchTeacherTab(tab, preserveFilter){
-  const filterWasActive = !preserveFilter && (state.studentsFilter || state.studentsBatchFilter);
-  if(!preserveFilter){ state.studentsFilter = null; state.studentsBatchFilter = null; }
+  const filterWasActive = !preserveFilter && (state.studentsFilter || state.studentsBatchFilter || state.studentsSearch);
+  if(!preserveFilter){ state.studentsFilter = null; state.studentsBatchFilter = null; state.studentsSearch = ''; }
   if(state.teacherTab === tab && !state.selectedStudentProfileId){
     if(filterWasActive) refreshTeacherPane();
     return;
@@ -2958,14 +3113,7 @@ function viewAdminDashboard(){
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:22px;">
       <div>
         <div class="eyebrow">Admin panel</div>
-        <h1 style="font-size:26px; margin-top:4px;">${
-          state.adminTab==='analytics' ? 'Overview'
-          : state.adminTab==='enrollments' ? 'All enrollments'
-          : state.adminTab==='enquiries' ? 'All enquiries'
-          : state.adminTab==='broadcast' ? 'Send a broadcast'
-          : state.adminTab==='diagnostics' ? 'Diagnostics'
-          : 'All profiles'
-        }</h1>
+        <h1 id="adminTabTitle" style="font-size:26px; margin-top:4px;">${adminTabTitle()}</h1>
       </div>
       <div style="display:flex; gap:8px;">
         <button class="btn btn-ghost btn-sm" data-action="admin-change-password">🔑 Change password</button>
@@ -2981,18 +3129,47 @@ function viewAdminDashboard(){
       <button class="btn btn-sm" style="${state.maintenanceMode ? 'background:var(--red); border-color:var(--red); color:#fff;' : 'background:var(--glass); border:1px solid var(--glass-border);'}" data-action="toggle-maintenance">${state.maintenanceMode ? '✅ Turn off' : '🛠️ Turn on'}</button>
     </div>
 
-    <div style="display:flex; gap:10px; margin-bottom:18px; flex-wrap:wrap;">
+    <div id="adminTabsBar" style="display:flex; gap:10px; margin-bottom:18px; flex-wrap:wrap;">${adminTabsBarHTML()}</div>
+
+    <div id="adminTabPane" class="pane-fade">${renderAdminPane()}</div>
+  </div>`;
+}
+
+// The admin panel's header title, one per tab — factored out so
+// switchAdminTab can refresh #adminTabTitle without a full-page repaint.
+function adminTabTitle(){
+  return state.adminTab==='analytics' ? 'Overview'
+    : state.adminTab==='enrollments' ? 'All enrollments'
+    : state.adminTab==='enquiries' ? 'All enquiries'
+    : state.adminTab==='broadcast' ? 'Send a broadcast'
+    : state.adminTab==='authlogs' ? 'Access logs'
+    : state.adminTab==='diagnostics' ? 'Diagnostics'
+    : 'All profiles';
+}
+
+// The admin panel's pill strip, factored out so switchAdminTab can refresh
+// just the active-tab highlight (via #adminTabsBar) without touching the
+// pane content or anything else on the page.
+function adminTabsBarHTML(){
+  return `
       <div class="pill ${state.adminTab==='analytics'?'active':''}" data-action="admin-tab" data-tab="analytics">📊 Analytics</div>
       <div class="pill ${state.adminTab==='teachers'?'active':''}" data-action="admin-tab" data-tab="teachers">🍎 Teachers (${ADMIN_TEACHERS.length})</div>
       <div class="pill ${state.adminTab==='students'?'active':''}" data-action="admin-tab" data-tab="students">👪 Students (${ADMIN_STUDENTS.length})</div>
       <div class="pill ${state.adminTab==='enrollments'?'active':''}" data-action="admin-tab" data-tab="enrollments">📋 Enrollments (${ADMIN_ENROLLMENTS.length})</div>
       <div class="pill ${state.adminTab==='enquiries'?'active':''}" data-action="admin-tab" data-tab="enquiries">✉️ Enquiries (${ADMIN_ENQUIRIES.length})</div>
       <div class="pill ${state.adminTab==='broadcast'?'active':''}" data-action="admin-tab" data-tab="broadcast">📣 Broadcast</div>
-      <div class="pill ${state.adminTab==='diagnostics'?'active':''}" data-action="admin-tab" data-tab="diagnostics">🩺 Diagnostics${lastDataError ? ' <span class="notif-bell-badge" style="position:static; display:inline-flex; margin-left:4px;">!</span>' : ''}</div>
-    </div>
+      <div class="pill ${state.adminTab==='authlogs'?'active':''}" data-action="admin-tab" data-tab="authlogs">🕓 Access logs</div>
+      <div class="pill ${state.adminTab==='diagnostics'?'active':''}" data-action="admin-tab" data-tab="diagnostics">🩺 Diagnostics${lastDataError ? ' <span class="notif-bell-badge" style="position:static; display:inline-flex; margin-left:4px;">!</span>' : ''}</div>`;
+}
 
-    ${state.adminTab==='analytics' ? adminAnalyticsView()
+// Picks which tab's content to show — centralized so viewAdminDashboard,
+// refreshAdminPane, and switchAdminTab all stay in sync (same pattern as
+// renderTeacherPane/renderStudentPane).
+function renderAdminPane(){
+  const rows = state.adminTab==='teachers' ? ADMIN_TEACHERS : ADMIN_STUDENTS;
+  return state.adminTab==='analytics' ? adminAnalyticsView()
       : state.adminTab==='diagnostics' ? adminDiagnosticsView()
+      : state.adminTab==='authlogs' ? adminAuthLogsView()
       : state.adminTab==='enrollments' ? adminEnrollmentsView()
       : state.adminTab==='enquiries' ? adminEnquiriesView()
       : state.adminTab==='broadcast' ? adminBroadcastView()
@@ -3016,8 +3193,38 @@ function viewAdminDashboard(){
           </tr>`).join('')}
         </tbody>
       </table>` : `<p class="muted" style="font-size:13.5px;">No ${state.adminTab} yet.</p>`}
-    </div>`}
-  </div>`;
+    </div>`;
+}
+
+// Refreshes just the admin panel's active tab pane in place — mirrors
+// refreshTeacherPane/refreshStudentPane.
+function refreshAdminPane(){
+  const pane = document.getElementById('adminTabPane');
+  if(pane && state.view==='adminDashboard') pane.innerHTML = renderAdminPane();
+}
+
+// Switches the admin panel's active tab the same way switchTeacherTab
+// does: only #adminTabsBar (active-tab highlight) and #adminTabPane
+// (content) are touched, with a brief skeleton in between, so clicking
+// between tabs never looks like the whole panel (or the maintenance-mode
+// card, or the header) reloaded.
+async function switchAdminTab(tab){
+  if(state.adminTab === tab) return;
+  state.adminTab = tab;
+  const tabsBar = document.getElementById('adminTabsBar');
+  const pane = document.getElementById('adminTabPane');
+  const titleEl = document.getElementById('adminTabTitle');
+  if(!pane){ render(); return; }
+  if(tabsBar) tabsBar.innerHTML = adminTabsBarHTML();
+  if(titleEl) titleEl.textContent = adminTabTitle();
+  pane.classList.remove('pane-fade');
+  pane.innerHTML = teacherTabSkeleton();
+  await new Promise(res=>setTimeout(res, 200));
+  if(state.adminTab !== tab) return; // switched again while this was loading
+  const freshPane = document.getElementById('adminTabPane');
+  if(!freshPane) return;
+  freshPane.innerHTML = renderAdminPane();
+  freshPane.classList.add('pane-fade');
 }
 
 // The admin panel's Analytics tab: headline stat cards, an enrollment-fee
@@ -3148,6 +3355,41 @@ function adminDiagnosticsView(){
         </div>
       </div>`).join('')}
     </div>` : `<p class="muted" style="font-size:13.5px;">No errors logged yet. 🎉</p>`)}
+  </div>`;
+}
+
+// The admin panel's Access Logs tab: every sign-up and sign-in, who it
+// was, what time, and whether they used a password or Google — see the
+// auth_logs table.
+function adminAuthLogsView(){
+  if(authLogsStatus==='idle') ensureAuthLogs();
+  const loading = authLogsStatus==='idle' || authLogsStatus==='loading';
+  return `
+  <div class="glass" style="padding:22px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:6px;">
+      <h3 style="font-size:15.5px;">🕓 Access logs</h3>
+      <button class="btn btn-ghost btn-sm" data-action="refresh-auth-logs">🔄 Refresh</button>
+    </div>
+    <p class="muted" style="font-size:12.5px; margin-bottom:18px; line-height:1.5;">
+      Every sign-up and sign-in, by anyone — student, teacher, or admin — with the time and method used. Last 200.
+    </p>
+    ${loading ? `<div style="display:flex; flex-direction:column; gap:10px;">
+      <div class="skel skel-card"></div><div class="skel skel-card"></div>
+    </div>` : authLogsStatus==='error' ? `<p class="muted" style="font-size:13.5px;">Couldn't load access logs. Try refreshing.</p>` : (authLogs.length ? `
+    <table class="data-table">
+      <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Event</th><th>Method</th><th>When</th></tr></thead>
+      <tbody>
+        ${authLogs.map(l=>`
+        <tr>
+          <td style="font-weight:600;">${escapeHtml(l.full_name || 'Unknown')}</td>
+          <td class="muted">${escapeHtml(l.email || '—')}</td>
+          <td class="muted" style="text-transform:capitalize;">${escapeHtml(l.role || '—')}</td>
+          <td><span class="badge ${l.event==='sign_up'?'badge-blue':'badge-green'}">${l.event==='sign_up' ? 'SIGNED UP' : 'SIGNED IN'}</span></td>
+          <td class="muted" style="text-transform:capitalize;">${escapeHtml(l.method)}</td>
+          <td class="muted" style="white-space:nowrap;">${new Date(l.created_at).toLocaleString()}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>` : `<p class="muted" style="font-size:13.5px;">No access logs yet.</p>`)}
   </div>`;
 }
 
@@ -4559,13 +4801,19 @@ function reviewModal(enrollmentId){
   </div>`;
 }
 
-function payModal(){
-  const totalDue = myEnrollments.filter(e=>e.status!=='paid').reduce((s,e)=>s+e.fee,0);
+// enrollmentId (optional): pays just that one enrollment, so a student can
+// settle one teacher's fee at a time instead of always paying every
+// outstanding fee across every teacher in one lump sum. Omitted (or from
+// the "Pay all at once" button) falls back to the old behavior — every
+// due/overdue enrollment paid together in a single recorded payment.
+function payModal(enrollmentId){
+  const single = enrollmentId ? myEnrollments.find(e=>String(e.id)===String(enrollmentId)) : null;
+  const amount = single ? single.fee : myEnrollments.filter(e=>e.status!=='paid').reduce((s,e)=>s+e.fee,0);
   return `<div class="glass modal">
-    <h3 style="font-size:18px; margin-bottom:4px;">Mark fees as paid</h3>
-    <p class="muted" style="font-size:13px; margin-bottom:18px;">Total due across all enrollments. (This records the payment — it does not move real money.)</p>
+    <h3 style="font-size:18px; margin-bottom:4px;">Mark ${single ? 'fee' : 'fees'} as paid</h3>
+    <p class="muted" style="font-size:13px; margin-bottom:18px;">${single ? `For ${escapeHtml(single.subject)} with ${escapeHtml(single.teacherName)}.` : 'Total due across all enrollments.'} (This records the payment — it does not move real money.)</p>
     <div style="text-align:center; padding:20px 0;">
-      <div style="font-family:var(--mono); font-size:36px; font-weight:700;">₹${totalDue}</div>
+      <div style="font-family:var(--mono); font-size:36px; font-weight:700;">₹${amount}</div>
     </div>
     <div class="field">
       <label class="field-label">Payment method</label>
@@ -4573,7 +4821,7 @@ function payModal(){
         <option>UPI</option><option>Card</option><option>Netbanking</option><option>Cash</option>
       </select>
     </div>
-    <button class="btn btn-primary btn-block" style="margin-top:10px;" data-action="confirm-pay">Confirm ₹${totalDue} as paid</button>
+    <button class="btn btn-primary btn-block" style="margin-top:10px;" data-action="confirm-pay" ${single ? `data-id="${single.id}"` : ''}>Confirm ₹${amount} as paid</button>
   </div>`;
 }
 
@@ -4805,12 +5053,11 @@ document.addEventListener('click', (e)=>{
       ).finally(()=>setBtnLoading(el, false));
       break;
     case 'admin-tab':
-      state.adminTab = el.dataset.tab;
-      render();
+      switchAdminTab(el.dataset.tab);
       break;
     case 'admin-enroll-filter':
       state.adminEnrollFilter = el.dataset.filter;
-      render();
+      refreshAdminPane();
       break;
     case 'export-enrollments-csv': {
       const header = ['Student','Teacher','Subject','Fee','Status','Enrolled on'];
@@ -4858,6 +5105,9 @@ document.addEventListener('click', (e)=>{
     }
     case 'refresh-site-logs':
       ensureSiteLogs(true);
+      break;
+    case 'refresh-auth-logs':
+      ensureAuthLogs(true);
       break;
     case 'clear-site-logs': {
       if(!confirm('Delete all logged errors? This cannot be undone.')) return;
@@ -5230,19 +5480,7 @@ document.addEventListener('click', (e)=>{
       break;
     }
     case 'student-tab': {
-      const tab = el.dataset.tab;
-      state.studentTab = tab;
-      if(tab==='notifications'){
-        const unreadIds = myNotifications.filter(n=>!n.readAt).map(n=>n.id);
-        if(unreadIds.length){
-          const now = new Date().toISOString();
-          myNotifications.forEach(n=>{ if(!n.readAt) n.readAt = now; });
-          sb.from('notifications').update({ read_at: now }).in('id', unreadIds).then(({error})=>{
-            if(error) console.error('Failed to mark notifications read', error);
-          });
-        }
-      }
-      render();
+      switchStudentTab(el.dataset.tab);
       break;
     }
     case 'toggle-notif-drawer': {
@@ -5428,6 +5666,7 @@ document.addEventListener('click', (e)=>{
     case 'clear-students-filter':
       state.studentsFilter = null;
       state.studentsBatchFilter = null;
+      state.studentsSearch = '';
       refreshTeacherPane();
       break;
     case 'notify-pending-fees': {
@@ -5716,11 +5955,11 @@ document.addEventListener('click', (e)=>{
       break;
     }
     case 'open-pay':
-      openModal(payModal());
+      openModal(payModal(el.dataset.id));
       break;
     case 'confirm-pay':
       setBtnLoading(el, true);
-      confirmPay(document.getElementById('payMethod').value).finally(()=>setBtnLoading(el, false));
+      confirmPay(document.getElementById('payMethod').value, el.dataset.id).finally(()=>setBtnLoading(el, false));
       break;
     case 'retry-load': {
       setBtnLoading(el, true);
@@ -5749,6 +5988,24 @@ document.addEventListener('change', (e)=>{
       state.studentsBatchFilter = el.value === 'all' ? null : el.value;
       refreshTeacherPane();
       break;
+    case 'teacher-set-fee-status': {
+      // Lets a teacher update a student's payment status right from the
+      // Students tab row, instead of having to open the student's batch
+      // to find the same toggle (see 'set-fee-status' above).
+      const enrollmentId = parseInt(el.dataset.enrollment);
+      const status = el.value;
+      const prevColor = el.style.color;
+      el.disabled = true;
+      sb.from('enrollments').update({ status }).eq('id', enrollmentId).then(({error})=>{
+        el.disabled = false;
+        if(error){ toast('❌ ' + error.message, 'err'); el.style.color = prevColor; return; }
+        const ms = myStudents.find(x=>x.enrollmentId===enrollmentId);
+        if(ms) ms.feeStatus = status;
+        el.style.color = status==='paid' ? 'var(--green)' : status==='due' ? 'var(--amber)' : 'var(--red)';
+        toast('✅ Payment updated', 'ok');
+      });
+      break;
+    }
     case 'admin-set-fee-status': {
       const id = parseInt(el.dataset.id);
       const status = el.value;
@@ -5831,8 +6088,12 @@ async function saveTeacherProfileOnboarding(){
   nav('teacherDashboard');
 }
 
-async function confirmPay(method){
-  const due = myEnrollments.filter(e=>e.status!=='paid');
+// enrollmentId (optional): pays just that one enrollment (see payModal
+// above); omitted pays every due/overdue enrollment together, same as before.
+async function confirmPay(method, enrollmentId){
+  const due = enrollmentId
+    ? myEnrollments.filter(e=>String(e.id)===String(enrollmentId))
+    : myEnrollments.filter(e=>e.status!=='paid');
   const total = due.reduce((s,e)=>s+e.fee,0);
   for(const e of due){
     await sb.from('enrollments').update({status:'paid'}).eq('id', e.id);
